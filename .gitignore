@@ -1,0 +1,16 @@
+# Runtime and diagnostic output
+*.log
+
+# Backups created by setup.sh when replacing a tmux configuration
+tmux.conf.bak.*
+
+# Editor and OS metadata
+*~
+*.swp
+*.swo
+.DS_Store
+
+# Local-only environment files
+.env
+.env.*
+!.env.example
