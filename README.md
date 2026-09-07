@@ -9,7 +9,7 @@ The palette follows the local Monokai/Neovim values: `#272822` base,
 ## Files
 
 - `tmux.conf` — self-contained tmux configuration; no oh-my-tmux or TPM required.
-- `setup.sh` — idempotently installs/checks tmux, eza, and synth-shell, then adds
+- `scripts/setup.sh` — idempotently installs/checks tmux, eza, and synth-shell, then adds
   guarded eza aliases when they are missing.
 - `README.md` — this usage and integration guide.
 
@@ -60,6 +60,7 @@ then:
 | --- | --- |
 | `R` | Reload `tmux.conf` |
 | `a` | Cycle focus through split panes |
+| `Up` / `Down` / `Left` / `Right` | Focus the adjacent pane (one-shot) |
 | `d` | Detach |
 | `?` | List bindings |
 | `c` | New window in the current directory |
@@ -73,8 +74,16 @@ then:
 | `j` | Enter copy mode manually |
 | `]` | Paste the latest buffer |
 
-Inside copy mode, `v` starts selection, `y` copies and exits, `i` exits without
-copying, `q`/`C-q` exits, and arrows or `h/j/k/l` move the cursor.
+Inside copy mode, `v` starts selection. Mouse drag selections stay active after
+release. `y`/`C-c` copy and clear the selection while preserving command mode and
+the cursor position. `Enter` does the same when a selection exists and otherwise
+keeps command mode active. `i`, `q`, or `C-q` returns to input mode.
+
+On tmux 3.7 or newer under Windows Terminal and WSL, those copy keys use
+`clip.exe` asynchronously and suppress OSC 52 for that operation. This avoids a
+Windows Terminal clipboard stall while still updating tmux's paste buffer and
+the Windows clipboard. Other terminal environments continue to use tmux's
+native OSC 52 integration.
 
 ## Supported prompts and commands
 
@@ -91,6 +100,9 @@ of adding descriptive labels such as `(goto line)`.
 - Copy mode `/` / `?` — search forward / backward.
 - Copy mode `f` / `t` / `F` / `T` — jump forward, to-forward, backward, or to-backward.
 
+On tmux 3.7 or newer, the `:` and `/` prompts place input directly after the
+prompt character and Backspace closes the prompt when it is empty.
+
 Inside any vi-style prompt, `Esc` enters command/navigation mode, arrow keys or
 `h/j/k/l` move the cursor, and `i` returns to text input. `Enter` executes the
 prompt; `q` cancels it.
@@ -103,14 +115,14 @@ does not redefine them, so the same shell experience is preserved inside and
 outside tmux. If those tools are unavailable on another machine, the shell
 configuration falls back without affecting tmux startup.
 
-Run `./setup.sh` when provisioning another machine. It skips tools and aliases
+Run `./scripts/setup.sh` when provisioning another machine. It skips tools and aliases
 that already exist, installs eza through apt/dnf/pacman/Homebrew when possible,
 and downloads synth-shell for its interactive installer when no user install is
 present. It does not overwrite an existing shell or tmux configuration by
 default. To intentionally replace a destination tmux config, use:
 
 ```sh
-./setup.sh --overwrite
+./scripts/setup.sh --overwrite
 ```
 
 The previous tmux config is saved as `tmux.conf.bak.YYYYMMDD-HHMMSS` first.

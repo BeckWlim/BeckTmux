@@ -7,6 +7,7 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 HOME_DIR="${HOME:?HOME must be set}"
 BASHRC="${HOME_DIR}/.bashrc"
 TMUX_CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME_DIR}/.config}/tmux"
@@ -39,11 +40,11 @@ parse_args() {
 }
 
 install_tmux_config() {
-  local source_config="${SCRIPT_DIR}/tmux.conf"
+  local source_config="${PROJECT_DIR}/tmux.conf"
   [[ -f "${source_config}" ]] || { warn "project config not found at ${source_config}"; return; }
 
   mkdir -p "${TMUX_CONFIG_DIR}"
-  if [[ "${source_config}" == "${TMUX_CONFIG}" ]]; then
+  if [[ -e "${TMUX_CONFIG}" && "${source_config}" -ef "${TMUX_CONFIG}" ]]; then
     info "using project config in place: ${TMUX_CONFIG}"
     return
   fi
@@ -154,8 +155,8 @@ main() {
   install_eza
   install_synth_shell
   wire_eza_aliases
-  info "configuration: ${SCRIPT_DIR}/tmux.conf"
-  info 'reload an attached server with: C-a r'
+  info "configuration: ${PROJECT_DIR}/tmux.conf"
+  info 'reload an attached server with: C-a R'
 }
 
 main "$@"
