@@ -26,6 +26,12 @@ The left side of the status bar always shows the active terminal context:
 While the `C-a` prefix is held, the right status cluster shows a final `│ ⟐`
 segment as a small abstract command-layer cue rather than a keyboard glyph.
 
+The right side begins with `[ FOCUSED ]` in green while the terminal window
+displaying the tmux client has focus. The tag disappears when it does not. This
+uses terminal focus events, so it tracks focus moving between terminal windows
+as well as between applications. Focus hooks target and refresh the affected
+client immediately; a one-second periodic update covers missed terminal events.
+
 Each pane has a small top border tag such as `◈ P1 bash` or `○ P2 nvim`.
 `◈` identifies the focused pane and its `◈ P#` label is green; `○` marks the
 others. Pane borders stay neutral so the tag is the only focus accent. Window
