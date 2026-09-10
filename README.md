@@ -11,6 +11,10 @@ The palette follows the local Monokai/Neovim values: `#272822` base,
 - `tmux.conf` — self-contained tmux configuration; no oh-my-tmux or TPM required.
 - `scripts/setup.sh` — idempotently installs/checks tmux, eza, and synth-shell, then adds
   guarded eza aliases when they are missing.
+- `scripts/migrate-tmux.sh` — safely builds, validates, installs, and switches to a
+  requested tmux release while preserving the currently installed binary.
+- `tests/run.sh` — smoke-tests shell entry points and the effective configuration on
+  an isolated tmux server.
 - `README.md` — this usage and integration guide.
 
 Tmux loads this file automatically from `~/.config/tmux/tmux.conf`.
@@ -133,7 +137,46 @@ default. To intentionally replace a destination tmux config, use:
 
 The previous tmux config is saved as `tmux.conf.bak.YYYYMMDD-HHMMSS` first.
 
+## Tmux version migration
+
+The generic migration script accepts the target release as its first argument.
+Build and validate a release without changing the installed binary or running
+server:
+
+```sh
+./scripts/migrate-tmux.sh 3.6b check
+```
+
+Install the validated build under `/usr/local`. The currently installed binary
+is preserved using its reported version, such as `/usr/local/bin/tmux-3.7c`.
+The running server and its panes continue using their existing version until
+explicitly switched:
+
+```sh
+./scripts/migrate-tmux.sh 3.6b install
+```
+
+The `check` action does not install the target. Complete `install` successfully
+before running `switch`.
+
+After saving work and leaving tmux normally, start the target server from an
+outside shell:
+
+```sh
+./scripts/migrate-tmux.sh 3.6b switch
+```
+
+If a server is still running, `switch` refuses to stop it and lists its panes.
+The destructive `switch --kill-old-server` form is available only for an
+intentional forced cutover.
+
 ## Validation and reload
+
+Run the complete non-mutating smoke suite:
+
+```sh
+./tests/run.sh
+```
 
 Check the configuration without attaching to a live session:
 
