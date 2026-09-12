@@ -49,7 +49,7 @@ cleanup() {
     tmux -S "${tmux_socket_path}" kill-server >/dev/null 2>&1 || true
   fi
   if [[ -n "${temporary_directory}" && -d "${temporary_directory}" ]]; then
-    rm -f -- "${temporary_directory}/server.sock"
+    rm -f -- "${temporary_directory}/clip.exe" "${temporary_directory}/server.sock"
     rmdir -- "${temporary_directory}" 2>/dev/null || true
   fi
 }
@@ -76,7 +76,9 @@ check_shell_scripts() {
 start_isolated_server() {
   temporary_directory="$(mktemp -d /tmp/beck-tmux-tests.XXXXXXXX)"
   tmux_socket_path="${temporary_directory}/server.sock"
-  env -u TMUX tmux -S "${tmux_socket_path}" -f "${TMUX_CONFIG_PATH}" \
+  ln -s "$(command -v true)" "${temporary_directory}/clip.exe"
+  env -u TMUX PATH="${temporary_directory}:${PATH}" \
+    tmux -S "${tmux_socket_path}" -f "${TMUX_CONFIG_PATH}" \
     new-session -d -s config-test
   pass 'tmux.conf starts an isolated server'
 }
@@ -128,6 +130,8 @@ check_bindings() {
     "$(binding copy-mode-vi v)"
   assert_contains 'copy-mode i returns to input' 'cancel' \
     "$(binding copy-mode-vi i)"
+  assert_contains 'copy-mode y uses the external clipboard bridge' 'copy-pipe -C clip.exe' \
+    "$(binding copy-mode-vi y)"
 }
 
 main() {

@@ -89,11 +89,11 @@ release. `y`/`C-c` copy and clear the selection while preserving command mode an
 the cursor position. `Enter` does the same when a selection exists and otherwise
 keeps command mode active. `i`, `q`, or `C-q` returns to input mode.
 
-On tmux 3.7 or newer under Windows Terminal and WSL, those copy keys use
-`clip.exe` asynchronously and suppress OSC 52 for that operation. This avoids a
-Windows Terminal clipboard stall while still updating tmux's paste buffer and
-the Windows clipboard. Other terminal environments continue to use tmux's
-native OSC 52 integration.
+On tmux 3.6 or newer, when WSL's `clip.exe` bridge is available, those copy keys
+use it asynchronously and suppress OSC 52 for that operation. This avoids a
+terminal clipboard stall while still updating tmux's paste buffer and the
+Windows clipboard. Other terminal environments continue to use tmux's native
+OSC 52 integration.
 
 ## Supported prompts and commands
 
