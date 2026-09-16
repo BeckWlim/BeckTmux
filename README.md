@@ -92,6 +92,9 @@ checks the publisher's process identity and foreground terminal ownership once a
 second. Exiting, crashing, killing the application job, or suspending back to the
 shell restores the default palette on the next check without application cleanup.
 Changing focus to another pane does not revoke a running application's palette.
+Losing terminal-window focus also preserves the palette. On Linux, owner identity
+uses the kernel's process-start ticks, so wall-clock changes cannot revoke a live
+application's palette. Other platforms use `ps` start times in UTC.
 No heartbeat is required from the application.
 
 The publisher defaults to the hook's parent process. Applications invoking the
@@ -103,6 +106,8 @@ generation token, so an old watcher cannot clear a newer publication either.
 Config reloads preserve valid overrides, and watchers stop after reset, ownership
 replacement, pane removal, or server shutdown. Recovery has been tested on Linux;
 other platforms need compatible `ps` output.
+After updating the watcher, republish the application palette once (for example,
+reapply the Neovim colorscheme) to replace any watcher already running.
 
 After updating from the earlier hook, reload tmux with `C-a R` and let applications
 republish once (for example by reapplying the Neovim colorscheme). Old pane overrides

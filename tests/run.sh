@@ -307,13 +307,18 @@ check_theme_recovery() {
   pane_shell_pid="$(tmux -S "${tmux_socket_path}" display-message -p -t "${recovery_pane_id}" '#{pane_pid}')"
   owner_group_output="$(ps -p "${pane_shell_pid}" -o tpgid=)"
   owner_pid="${owner_group_output//[[:space:]]/}"
-  env TMUX="${tmux_socket_path},0,0" TMUX_PANE="${recovery_pane_id}" \
+  # Publisher and tmux-owned watcher may have different wall-clock settings.
+  # Process identity must remain stable regardless of ps lstart formatting.
+  env TZ=UTC12 TMUX="${tmux_socket_path},0,0" TMUX_PANE="${recovery_pane_id}" \
     "${THEME_SCRIPT_PATH}" set --owner "${owner_pid}" 'bg=#eeeeee'
   original_token="$(tmux -S "${tmux_socket_path}" show-options -pqv -t "${recovery_pane_id}" @beck_theme_token)"
   original_identity="$(tmux -S "${tmux_socket_path}" show-options -pqv -t "${recovery_pane_id}" @beck_theme_owner)"
   sleep 1.2
   assert_equal 'live foreground publisher retains colours across watchdog checks' '#eeeeee' \
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${recovery_pane_id}" '#{E:@beck_pane_bg}')"
+  if [[ -r /proc/self/stat ]]; then
+    assert_contains 'Linux owner identity uses stable boot-relative ticks' ':ticks:' "${original_identity}"
+  fi
 
   tmux -S "${tmux_socket_path}" send-keys -t "${recovery_pane_id}" C-z
   wait_for_pane_format "${recovery_pane_id}" '#{pane_current_command}' bash

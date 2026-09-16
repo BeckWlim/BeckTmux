@@ -31,18 +31,33 @@ fail() {
 readonly PALETTE_ROLES=(bg surface cursor border fg muted green cyan yellow purple red
   window_active_fg window_active_bg window_inactive_fg window_inactive_bg)
 
-# Read the terminal, job-control state, birth time, and executable together.
-# Birth time guards against PID reuse; the command also detects exec handoffs.
+# Birth identity guards against PID reuse; the command detects exec handoffs.
+# On Linux, ps lstart converts boot-relative ticks to wall time and can drift
+# when the system clock/boot-time estimate changes (including under WSL).
 owner_identity() {
   local owner_pid="$1"
   local pane_tty="$2"
   local process_description
-  local owner_tty owner_group_id foreground_group_id owner_state owner_signature
-  process_description="$(LC_ALL=C ps -p "${owner_pid}" -o tty= -o pgid= -o tpgid= -o stat= -o lstart= -o comm=)" || return 1
-  read -r owner_tty owner_group_id foreground_group_id owner_state owner_signature <<<"${process_description}"
+  local owner_tty owner_group_id foreground_group_id owner_state owner_command
+  local owner_birth process_stat
+  local -a process_fields
+  process_description="$(LC_ALL=C ps -p "${owner_pid}" -o tty= -o pgid= -o tpgid= -o stat= -o comm=)" || return 1
+  read -r owner_tty owner_group_id foreground_group_id owner_state owner_command <<<"${process_description}"
   [[ "${owner_tty}" == "${pane_tty#/dev/}" && "${owner_group_id}" == "${foreground_group_id}" &&
-      "${foreground_group_id}" != -1 && "${owner_state}" != *[TXZ]* && -n "${owner_signature}" ]] || return 1
-  printf '%s:%s' "${owner_pid}" "${owner_signature}"
+      "${foreground_group_id}" != -1 && "${owner_state}" != *[TXZ]* && -n "${owner_command}" ]] || return 1
+  if [[ -r /proc/self/stat ]]; then
+    IFS= read -r process_stat < "/proc/${owner_pid}/stat" || return 1
+    # comm (field 2) may contain spaces or parentheses; strip through its
+    # final closing parenthesis. The remaining array starts at field 3.
+    read -r -a process_fields <<<"${process_stat##*) }"
+    owner_birth="${process_fields[19]:-}"
+    [[ "${owner_birth}" =~ ^[0-9]+$ ]] || return 1
+    owner_birth="ticks:${owner_birth}"
+  else
+    owner_birth="$(LC_ALL=C TZ=UTC0 ps -p "${owner_pid}" -o lstart=)" || return 1
+    [[ -n "${owner_birth//[[:space:]]/}" ]] || return 1
+  fi
+  printf '%s:%s:%s' "${owner_pid}" "${owner_birth}" "${owner_command}"
 }
 
 clear_commands() {
