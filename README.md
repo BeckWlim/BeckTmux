@@ -2,7 +2,7 @@
 
 This directory contains the terminal layer for the Beck workspace. Neovim owns
 editor rendering; tmux owns panes, terminal history, and the bottom context bar.
-The palette follows the local Monokai/Neovim values: `#272822` base,
+The default night palette uses Monokai values: `#272822` base,
 `#3a3d3f` CursorLine/selection, `#a6e22e` focus, `#66d9ef` context, and
 `#f8f8f2` primary text.
 
@@ -13,11 +13,160 @@ The palette follows the local Monokai/Neovim values: `#272822` base,
   guarded eza aliases when they are missing.
 - `scripts/migrate-tmux.sh` — safely builds, validates, installs, and switches to a
   requested tmux release while preserving the currently installed binary.
+- `scripts/theme.sh` — opt-in application hook to set or reset a pane's palette.
 - `tests/run.sh` — smoke-tests shell entry points and the effective configuration on
   an isolated tmux server.
 - `README.md` — this usage and integration guide.
 
 Tmux loads this file automatically from `~/.config/tmux/tmux.conf`.
+
+## Application theme hook
+
+Tmux owns its default night palette. Applications can explicitly publish colours
+for their own pane through `scripts/theme.sh` (Bash 4 or newer, and `ps` with
+`tty`, `pgid`, `tpgid`, `stat`, `lstart`, and `comm` fields):
+
+```sh
+# Invoked by the foreground application.
+~/.config/tmux/scripts/theme.sh set \
+  'bg=#fafaf7' 'fg=#242424' 'cursor=#e5e5e0' \
+  'border=#777770' 'muted=#666660' 'green=#3d6815' 'cyan=#006b80'
+
+# The same application releases its palette.
+~/.config/tmux/scripts/theme.sh reset
+
+# Manual recovery from the shell, regardless of the publisher.
+~/.config/tmux/scripts/theme.sh reset --force
+```
+
+Colours must be `#RRGGBB`. Each `set` replaces the pane's previous palette.
+Applications publish this standard set of roles through the hook:
+
+| Role | Purpose / fallback when omitted |
+| --- | --- |
+| `bg`, `fg` | Base background and primary text; default night colours |
+| `cursor` | Selection and selected-window background; default night colour |
+| `muted`, `border` | Secondary text and neutral borders; default night colours |
+| `green`, `cyan` | Focus accent and contextual information; default night colours |
+| `surface`, `yellow`, `purple`, `red` | Reserved surface and semantic accents |
+| `window_active_fg` | Selected window label; the application's `green` |
+| `window_active_bg` | Selected window background; the application's `cursor` |
+| `window_inactive_fg` | Unselected window label; the application's `muted` |
+| `window_inactive_bg` | Unselected window background; the application's `bg` |
+
+The existing Neovim palette roles remain supported. The four `window_*` roles
+are optional; their fallbacks derive from the same application's base palette.
+For consistent light themes, applications should publish all base roles used by
+the UI rather than leave individual colours at their night defaults.
+
+Tmux keeps separate colour namespaces:
+
+| Namespace | Owner and scope |
+| --- | --- |
+| `@beck_default_*` | Tmux's global night defaults |
+| `@beck_palette_*` | Application palette cached on its pane by `theme.sh` |
+| `@beck_pane_*` | Tmux formats resolving that pane's colours and fallbacks |
+| `@beck_ui_*` | Tmux formats resolving the session's focused palette for shared UI |
+
+Use the hook to publish colours so ownership and automatic recovery stay active.
+For inspection, `tmux display -p '#{E:@beck_ui_bg}'` shows the shared UI background;
+`#{E:@beck_pane_bg}` shows the target pane's own background.
+
+The hook uses the application's inherited `TMUX` and `TMUX_PANE` to target its
+server and pane. It never changes the global default palette. Each window retains
+its applications' palettes in tmux's pane options. Switching windows or panes
+selects the stored palette during tmux's normal redraw: no application callback,
+external command, or watchdog tick is needed to switch colours. Updates from an
+unfocused application refresh its own stored palette for the next switch.
+
+The status bar, selected and unselected window tags, pane borders, and prompts
+all use the focused pane's UI palette. Inactive window tags explicitly set both
+foreground and background, without inheriting reverse or bold highlighting.
+Terminal contents and copy selections retain their own pane's colours. Returning
+to an ordinary shell pane shows the default night palette. Tmux has no Neovim
+dependency and does not read application theme files.
+
+Applications should call `set` on startup, colour changes, and resume, and `reset`
+before exit or suspend. Each publication also starts a tmux-owned watcher that
+checks the publisher's process identity and foreground terminal ownership once a
+second. Exiting, crashing, killing the application job, or suspending back to the
+shell restores the default palette on the next check without application cleanup.
+Changing focus to another pane does not revoke a running application's palette.
+No heartbeat is required from the application.
+
+The publisher defaults to the hook's parent process. Applications invoking the
+hook through a shell wrapper must pass their own PID explicitly, for example
+`theme.sh set --owner 12345 'bg=#282c34'`. The owner must be running in this pane's
+foreground process group. `reset --owner 12345` releases that publisher's palette;
+an old publisher cannot reset a newer owner's colours. Each publication has a
+generation token, so an old watcher cannot clear a newer publication either.
+Config reloads preserve valid overrides, and watchers stop after reset, ownership
+replacement, pane removal, or server shutdown. Recovery has been tested on Linux;
+other platforms need compatible `ps` output.
+
+After updating from the earlier hook, reload tmux with `C-a R` and let applications
+republish once (for example by reapplying the Neovim colorscheme). Old pane overrides
+are removed on the next `set` or `reset`; subsequent switches use the stored palette.
+
+For the local BeckNvim configuration, this optional Lua snippet uses its existing
+`config.ui.palette.resolve()` boundary. Add it to Neovim startup to opt in; the
+tmux configuration does not install or enable it automatically:
+
+```lua
+if vim.env.TMUX and vim.env.TMUX_PANE then
+  local hook_path = vim.fn.expand('~/.config/tmux/scripts/theme.sh')
+  local owner_pid = tostring(vim.fn.getpid())
+  local application_active = true
+  local group = vim.api.nvim_create_augroup('beck_tmux_theme', { clear = true })
+
+  local function call_hook(arguments)
+    local command = { hook_path }
+    vim.list_extend(command, arguments)
+    -- Serialize updates so an earlier palette cannot arrive after reset.
+    local result = vim.system(command, { text = true }):wait(1000)
+    if result.code ~= 0 then
+      vim.schedule(function()
+        vim.notify('tmux theme: ' .. (result.stderr or 'hook failed'), vim.log.levels.WARN)
+      end)
+    end
+  end
+
+  local function publish()
+    if not application_active then return end
+    local colors = require('config.ui.palette').resolve()
+    local roles = {
+      bg = colors.background, fg = colors.foreground,
+      cursor = colors.selection, border = colors.border, muted = colors.muted,
+      green = colors.syntax.func, cyan = colors.syntax.type,
+    }
+    local arguments = { 'set', '--owner', owner_pid }
+    for role, color in pairs(roles) do
+      arguments[#arguments + 1] = string.format('%s=#%06x', role, color)
+    end
+    call_hook(arguments)
+  end
+
+  vim.api.nvim_create_autocmd({ 'VimEnter', 'ColorScheme', 'VimResume', 'ShellCmdPost' }, {
+    group = group,
+    callback = function()
+      application_active = true
+      -- Read colours after the colorscheme's highlight callbacks finish.
+      vim.schedule(publish)
+    end,
+  })
+  vim.api.nvim_create_autocmd({ 'VimLeavePre', 'VimSuspend' }, {
+    group = group,
+    callback = function()
+      application_active = false
+      call_hook({ 'reset', '--owner', owner_pid })
+    end,
+  })
+  vim.schedule(publish)
+end
+```
+
+The example needs Neovim 0.10+ and the local hook script. Other applications can
+call the same `set`/`reset` interface with their own palette.
 
 ## Mode context
 
