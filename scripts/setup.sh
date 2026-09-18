@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 
 # Install the optional terminal pieces used by Beck tmux.
-# The script is deliberately idempotent: existing eza/synth-shell installs and
-# existing shell customizations are preserved.
+# The script is deliberately idempotent: reuse existing installs and preserve
+# shell customizations while repairing the known synth-shell separator bug.
 
 set -Eeuo pipefail
 
@@ -28,7 +28,7 @@ Usage: setup.sh [--overwrite] [--skip-eza] [--skip-synth-shell]
 Options:
   --overwrite        replace tmux.conf after making a timestamped backup
   --skip-eza         skip eza installation and alias changes
-  --skip-synth-shell  skip synth-shell installation
+  --skip-synth-shell  skip synth-shell installation and separator repair
   -h, --help         show this help
 EOF
 }
@@ -145,6 +145,51 @@ install_synth_shell() {
   fi
 }
 
+patch_synth_shell_prompt() {
+  local prompt_script="${HOME_DIR}/.config/synth-shell/synth-shell-prompt.sh"
+  [[ -f "${prompt_script}" ]] || return 0
+
+  # Match only the known broken statement; leave upstream and custom renderers
+  # alone. %s must remain in use for prompt text such as directory names.
+  local broken_statement='printf '\''%s'\'' "${text_format}${segment_padding}${text}${segment_padding}${separator_padding_left}${separator_format}${separator_char}${separator_padding_right}${no_color}"'
+  local fixed_statement='printf '\''%s%b%s'\'' "${text_format}${segment_padding}${text}${segment_padding}${separator_padding_left}${separator_format}" "$separator_char" "${separator_padding_right}${no_color}"'
+  grep -Fq "${broken_statement}" "${prompt_script}" || return 0
+
+  local patched_script
+  patched_script="$(mktemp "${prompt_script}.patch.XXXXXXXX")" || return $?
+  if ! awk -v broken="${broken_statement}" -v fixed="${fixed_statement}" '
+    {
+      statement = $0
+      sub(/^[ \t]*/, "", statement)
+      sub(/[ \t]*$/, "", statement)
+      if (statement == broken) {
+        match($0, /[^ \t]/)
+        print substr($0, 1, RSTART - 1) fixed
+        replacements++
+      } else {
+        print
+      }
+    }
+    END { if (replacements != 1) exit 1 }
+  ' "${prompt_script}" >"${patched_script}" || ! bash -n "${patched_script}"; then
+    rm -f -- "${patched_script}"
+    warn 'synth-shell separator repair could not be validated; original script preserved'
+    return 1
+  fi
+
+  local backup_path
+  backup_path="$(mktemp "${prompt_script}.bak.XXXXXXXX")" || {
+    rm -f -- "${patched_script}"
+    return 1
+  }
+  local patch_exit_status=0
+  cp -p "${prompt_script}" "${backup_path}" && \
+    cp "${patched_script}" "${prompt_script}" || patch_exit_status=$?
+  rm -f -- "${patched_script}"
+  [[ "${patch_exit_status}" == 0 ]] || return "${patch_exit_status}"
+  info "repaired synth-shell Unicode separators; backup: ${backup_path}"
+}
+
 wire_eza_aliases() {
   [[ -f "${BASHRC}" ]] || return 0
   command -v eza >/dev/null 2>&1 || return 0
@@ -183,6 +228,7 @@ main() {
   fi
   if ((SKIP_SYNTH_SHELL == 0)); then
     run_optional_step 'synth-shell installation' install_synth_shell
+    run_optional_step 'synth-shell separator repair' patch_synth_shell_prompt
   fi
   if ((SKIP_EZA == 0)); then
     run_optional_step 'eza aliases' wire_eza_aliases

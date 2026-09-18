@@ -11,9 +11,10 @@ trap 'rm -rf -- "${FIXTURE_DIRECTORY}"' EXIT
 fail() { printf '[setup-test] FAIL: %s\n' "$*" >&2; exit 1; }
 
 mkdir -p "${FIXTURE_DIRECTORY}/bin"
-for utility in bash dirname mkdir cp date grep; do
+for utility in bash dirname mkdir cp date grep awk mktemp rm; do
   ln -s "$(command -v "${utility}")" "${FIXTURE_DIRECTORY}/bin/${utility}"
 done
+
 cat >"${FIXTURE_DIRECTORY}/bin/cat" <<'EOF'
 #!/usr/bin/env bash
 [[ "${SCENARIO}" != alias-failure ]] || exit 73
@@ -134,4 +135,114 @@ for scenario in missing-package update-failure clone-failure pull-failure submod
     fail "${scenario}: dependent or skipped operation ran"
   fi
   printf '[setup-test] ok: %s\n' "${scenario}"
+done
+
+# Exercise the installed-script repair without downloading or installing tools.
+utf8_locale="$(locale -a | awk 'tolower($0) ~ /utf-?8/ { print; exit }')"
+[[ -n "${utf8_locale}" ]] || fail 'a UTF-8 locale is required for separator tests'
+
+for synth_scenario in broken fixed upstream custom duplicate invalid skip; do
+  synth_directory="${FIXTURE_DIRECTORY}/synth-${synth_scenario}"
+  prompt_directory="${synth_directory}/home/.config/synth-shell"
+  prompt_script="${prompt_directory}/synth-shell-prompt.sh"
+  mkdir -p "${prompt_directory}"
+  : >"${synth_directory}/commands.log"
+  cat >"${prompt_directory}/synth-shell-prompt.config" <<'EOF'
+separator_char='\uE0B0'
+segment_padding=' '
+separator_padding_left=''
+separator_padding_right=''
+EOF
+  cat >"${prompt_script}" <<'EOF'
+printSegment() {
+  local text=$1
+  local text_format='' separator_format='' no_color=''
+EOF
+  case "${synth_scenario}" in
+    fixed)
+      cat >>"${prompt_script}" <<'EOF'
+  printf '%s%b%s' "${text_format}${segment_padding}${text}${segment_padding}${separator_padding_left}${separator_format}" "$separator_char" "${separator_padding_right}${no_color}"
+EOF
+      ;;
+    upstream)
+      cat >>"${prompt_script}" <<'EOF'
+  printf "${text_format}${segment_padding}${text}${segment_padding}${separator_padding_left}${separator_format}${separator_char}${separator_padding_right}${no_color}"
+EOF
+      ;;
+    custom) printf '  printf "%%s" "$separator_char"\n' >>"${prompt_script}" ;;
+    *)
+      cat >>"${prompt_script}" <<'EOF'
+  printf '%s' "${text_format}${segment_padding}${text}${segment_padding}${separator_padding_left}${separator_format}${separator_char}${separator_padding_right}${no_color}"
+EOF
+      ;;
+  esac
+  printf '}\n' >>"${prompt_script}"
+  if [[ "${synth_scenario}" == duplicate ]]; then
+    cat "${prompt_script}" >"${synth_directory}/duplicate.sh"
+    cat "${synth_directory}/duplicate.sh" >>"${prompt_script}"
+  elif [[ "${synth_scenario}" == invalid ]]; then
+    printf 'if\n' >>"${prompt_script}"
+  fi
+  chmod 750 "${prompt_script}"
+  cp -p "${prompt_script}" "${synth_directory}/original.sh"
+  cp "${prompt_directory}/synth-shell-prompt.config" "${synth_directory}/original.config"
+  synth_arguments=(--skip-eza)
+  [[ "${synth_scenario}" != skip ]] || synth_arguments+=(--skip-synth-shell)
+
+  # Run twice: a repaired installation must not be patched or backed up again.
+  for setup_run in 1 2; do
+    env PATH="${FIXTURE_DIRECTORY}/bin" HOME="${synth_directory}/home" \
+      XDG_CONFIG_HOME="${synth_directory}/home/.config" \
+      SCENARIO="synth-${synth_scenario}" SCENARIO_DIRECTORY="${synth_directory}" \
+      bash "${SETUP_SCRIPT}" "${synth_arguments[@]}" \
+      >"${synth_directory}/output-${setup_run}.log" 2>&1 || fail "${synth_scenario}: setup aborted"
+  done
+  [[ ! -s "${synth_directory}/commands.log" ]] || fail 'existing synth-shell triggered provisioning'
+  cmp -s "${prompt_directory}/synth-shell-prompt.config" "${synth_directory}/original.config" || \
+    fail 'separator configuration changed'
+  shopt -s nullglob
+  synth_backups=("${prompt_script}".bak.*)
+  synth_temporary_files=("${prompt_script}".patch.*)
+  shopt -u nullglob
+  [[ ${#synth_temporary_files[@]} == 0 ]] || fail 'temporary patch file leaked'
+
+  if [[ "${synth_scenario}" == broken ]]; then
+    [[ ${#synth_backups[@]} == 1 ]] || fail 'repair did not create exactly one backup'
+    cmp -s "${synth_backups[0]}" "${synth_directory}/original.sh" || fail 'backup differs from original'
+    [[ $(stat -c '%a' "${prompt_script}" 2>/dev/null || stat -f '%Lp' "${prompt_script}") == 750 ]] || \
+      fail 'script permissions changed'
+    if grep -q 'repaired synth-shell' "${synth_directory}/output-2.log"; then
+      fail 'second setup repeated the repair'
+    fi
+    literal_prompt_text='directory %s \n \u0041'
+    rendered_segment="$(env LC_ALL="${utf8_locale}" bash -c '
+      source "$1"
+      source "$2"
+      printSegment "$3"
+    ' separator-test "${prompt_script}" "${prompt_directory}/synth-shell-prompt.config" "${literal_prompt_text}")"
+    expected_triangle="$(env LC_ALL="${utf8_locale}" bash -c "printf '\\uE0B0'")"
+    [[ "${rendered_segment}" == " ${literal_prompt_text} ${expected_triangle}" ]] || \
+      fail 'separator conversion changed literal prompt text or failed to produce the triangle'
+    ascii_segment="$(env LC_ALL="${utf8_locale}" bash -c '
+      source "$1"
+      source "$2"
+      separator_char=">"
+      printSegment "$3"
+    ' separator-test "${prompt_script}" "${prompt_directory}/synth-shell-prompt.config" "${literal_prompt_text}")"
+    [[ "${ascii_segment}" == " ${literal_prompt_text} >" ]] || fail 'ASCII separator compatibility'
+  else
+    cmp -s "${prompt_script}" "${synth_directory}/original.sh" || fail "${synth_scenario}: original script changed"
+    [[ ${#synth_backups[@]} == 0 ]] || fail "${synth_scenario}: unnecessary backup"
+  fi
+  case "${synth_scenario}" in
+    duplicate|invalid)
+      grep -q 'optional step(s) failed' "${synth_directory}/output-1.log" || fail 'patch failure not reported'
+      ;;
+    *)
+      if grep -q 'optional step(s) failed' "${synth_directory}/output-1.log"; then
+        fail "${synth_scenario}: unexpected optional failure"
+      fi
+      ;;
+  esac
+  printf '[setup-test] ok: synth-shell %s\n' "${synth_scenario}"
 done

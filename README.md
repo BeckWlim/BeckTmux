@@ -294,7 +294,13 @@ available. To install synth-shell without attempting eza:
 source ~/.bashrc
 ```
 
-Use `--skip-synth-shell` to skip synth-shell instead. Its installer runs
+Setup also repairs existing Synth Shell installs with the known separator bug
+that displays `usernameE0B0` instead of a triangle. It backs up the prompt script
+as `synth-shell-prompt.sh.bak.XXXXXXXX` and decodes only the separator, preserving
+`separator_char='\uE0B0'` and treating prompt text literally. The repair matches
+the affected renderer only; repeated runs leave the repaired script unchanged.
+
+Use `--skip-synth-shell` to skip both installation and repair. Its installer runs
 interactively; without a terminal, setup downloads it and prints the installer
 path for later activation. To intentionally replace a destination tmux config, use:
 
