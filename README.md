@@ -283,7 +283,20 @@ Run `./scripts/setup.sh` when provisioning another machine. It skips tools and a
 that already exist, installs eza through apt/dnf/pacman/Homebrew when possible,
 and downloads synth-shell for its interactive installer when no user install is
 present. It does not overwrite an existing shell or tmux configuration by
-default. To intentionally replace a destination tmux config, use:
+default. Optional steps run independently: a package, download, or installer
+failure emits a warning and allows the other steps to continue. Setup returns
+success after optional failures and summarizes them at the end; configuration
+installation errors still stop setup. Eza aliases are added only if eza is
+available. To install synth-shell without attempting eza:
+
+```sh
+./scripts/setup.sh --skip-eza
+source ~/.bashrc
+```
+
+Use `--skip-synth-shell` to skip synth-shell instead. Its installer runs
+interactively; without a terminal, setup downloads it and prints the installer
+path for later activation. To intentionally replace a destination tmux config, use:
 
 ```sh
 ./scripts/setup.sh --overwrite

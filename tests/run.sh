@@ -72,6 +72,7 @@ check_shell_scripts() {
   "${SETUP_SCRIPT_PATH}" --help >/dev/null
   "${MIGRATION_SCRIPT_PATH}" --help >/dev/null
   "${THEME_SCRIPT_PATH}" --help >/dev/null
+  "${TESTS_DIRECTORY}/setup.sh"
   pass 'shell scripts parse, are executable, and expose help without side effects'
 }
 

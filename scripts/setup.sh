@@ -14,17 +14,22 @@ TMUX_CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME_DIR}/.config}/tmux"
 TMUX_CONFIG="${TMUX_CONFIG_DIR}/tmux.conf"
 SYNTH_DIR="${HOME_DIR}/.local/share/synth-shell"
 OVERWRITE_CONFIG=0
+SKIP_EZA=0
+SKIP_SYNTH_SHELL=0
+OPTIONAL_FAILURES=0
 
 info() { printf '[tmux-setup] %s\n' "$*"; }
 warn() { printf '[tmux-setup] warning: %s\n' "$*" >&2; }
 
 usage() {
   cat <<'EOF'
-Usage: setup.sh [--overwrite]
+Usage: setup.sh [--overwrite] [--skip-eza] [--skip-synth-shell]
 
 Options:
-  --overwrite  replace the destination tmux.conf after making a timestamped backup
-  -h, --help   show this help
+  --overwrite        replace tmux.conf after making a timestamped backup
+  --skip-eza         skip eza installation and alias changes
+  --skip-synth-shell  skip synth-shell installation
+  -h, --help         show this help
 EOF
 }
 
@@ -32,6 +37,8 @@ parse_args() {
   while (($# > 0)); do
     case "$1" in
       --overwrite) OVERWRITE_CONFIG=1 ;;
+      --skip-eza) SKIP_EZA=1 ;;
+      --skip-synth-shell) SKIP_SYNTH_SHELL=1 ;;
       -h|--help) usage; exit 0 ;;
       *) usage >&2; return 2 ;;
     esac
@@ -39,9 +46,23 @@ parse_args() {
   done
 }
 
+run_optional_step() {
+  local step_name="$1"
+  shift
+  # Functions called in a conditional cannot rely on errexit. Each operation
+  # inside an optional step must explicitly return on failure.
+  if "$@"; then
+    return 0
+  else
+    local step_exit_status="$?"
+    OPTIONAL_FAILURES=$((OPTIONAL_FAILURES + 1))
+    warn "${step_name} failed (exit ${step_exit_status}); continuing with the remaining setup steps"
+  fi
+}
+
 install_tmux_config() {
   local source_config="${PROJECT_DIR}/tmux.conf"
-  [[ -f "${source_config}" ]] || { warn "project config not found at ${source_config}"; return; }
+  [[ -f "${source_config}" ]] || { warn "project config not found at ${source_config}"; return 1; }
 
   mkdir -p "${TMUX_CONFIG_DIR}"
   if [[ -e "${TMUX_CONFIG}" && "${source_config}" -ef "${TMUX_CONFIG}" ]]; then
@@ -70,23 +91,24 @@ install_eza() {
   if command -v apt-get >/dev/null 2>&1; then
     info 'installing eza with apt'
     if command -v sudo >/dev/null 2>&1; then
-      sudo apt-get update
-      sudo apt-get install -y eza
+      sudo apt-get update || return $?
+      sudo apt-get install -y eza || return $?
     else
-      apt-get update
-      apt-get install -y eza
+      apt-get update || return $?
+      apt-get install -y eza || return $?
     fi
   elif command -v dnf >/dev/null 2>&1; then
     info 'installing eza with dnf'
-    sudo dnf install -y eza
+    sudo dnf install -y eza || return $?
   elif command -v pacman >/dev/null 2>&1; then
     info 'installing eza with pacman'
-    sudo pacman -S --needed --noconfirm eza
+    sudo pacman -S --needed --noconfirm eza || return $?
   elif command -v brew >/dev/null 2>&1; then
     info 'installing eza with Homebrew'
-    brew install eza
+    brew install eza || return $?
   else
     warn 'no supported package manager found for eza; install it manually'
+    return 1
   fi
 }
 
@@ -98,30 +120,34 @@ install_synth_shell() {
 
   if ! command -v git >/dev/null 2>&1; then
     warn 'git is required to install synth-shell'
-    return
+    return 1
   fi
 
-  mkdir -p "$(dirname -- "${SYNTH_DIR}")"
+  mkdir -p "$(dirname -- "${SYNTH_DIR}")" || return $?
   if [[ ! -d "${SYNTH_DIR}/.git" ]]; then
     info "cloning synth-shell into ${SYNTH_DIR}"
-    git clone --recursive https://github.com/andresgongora/synth-shell.git "${SYNTH_DIR}"
+    git clone --recursive https://github.com/andresgongora/synth-shell.git "${SYNTH_DIR}" || return $?
   else
     info 'updating existing synth-shell checkout'
-    git -C "${SYNTH_DIR}" pull --ff-only
-    git -C "${SYNTH_DIR}" submodule update --init --recursive
+    git -C "${SYNTH_DIR}" pull --ff-only || return $?
+    git -C "${SYNTH_DIR}" submodule update --init --recursive || return $?
   fi
 
-  if [[ -x "${SYNTH_DIR}/setup.sh" && -t 0 && -t 1 ]]; then
+  if [[ ! -x "${SYNTH_DIR}/setup.sh" ]]; then
+    warn "synth-shell installer is missing or not executable: ${SYNTH_DIR}/setup.sh"
+    return 1
+  fi
+  if [[ -t 0 && -t 1 ]]; then
     info 'starting synth-shell interactive installer'
-    (cd "${SYNTH_DIR}" && ./setup.sh)
+    (cd "${SYNTH_DIR}" && ./setup.sh) || return $?
   else
-    warn 'synth-shell is downloaded; run its setup.sh interactively to select features'
+    warn "synth-shell is downloaded; run ${SYNTH_DIR}/setup.sh interactively to select features"
   fi
 }
 
 wire_eza_aliases() {
-  [[ -f "${BASHRC}" ]] || return
-  command -v eza >/dev/null 2>&1 || return
+  [[ -f "${BASHRC}" ]] || return 0
+  command -v eza >/dev/null 2>&1 || return 0
 
   local marker='# >>> beck tmux eza integration >>>'
   if grep -Eq "^[[:space:]]*alias[[:space:]]+ls=['\"]eza[[:space:]]" "${BASHRC}" 2>/dev/null; then
@@ -134,7 +160,7 @@ wire_eza_aliases() {
   }
 
   info 'adding guarded eza aliases to ~/.bashrc'
-  cat >>"${BASHRC}" <<'EOF'
+  cat >>"${BASHRC}" <<'EOF' || return $?
 
 # >>> beck tmux eza integration >>>
 if command -v eza >/dev/null 2>&1; then
@@ -152,11 +178,23 @@ main() {
   parse_args "$@"
   install_tmux_config
   command -v tmux >/dev/null 2>&1 || warn 'tmux is not installed'
-  install_eza
-  install_synth_shell
-  wire_eza_aliases
+  if ((SKIP_EZA == 0)); then
+    run_optional_step 'eza installation' install_eza
+  fi
+  if ((SKIP_SYNTH_SHELL == 0)); then
+    run_optional_step 'synth-shell installation' install_synth_shell
+  fi
+  if ((SKIP_EZA == 0)); then
+    run_optional_step 'eza aliases' wire_eza_aliases
+  fi
+  if ((OPTIONAL_FAILURES > 0)); then
+    warn "setup completed with ${OPTIONAL_FAILURES} optional step(s) failed; see warnings above"
+  fi
   info "configuration: ${PROJECT_DIR}/tmux.conf"
   info 'reload an attached server with: C-a R'
+  info 'reload shell customizations with: source ~/.bashrc'
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
