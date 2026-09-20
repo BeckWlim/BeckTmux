@@ -243,11 +243,14 @@ release. `y`/`C-c` copy and clear the selection while preserving command mode an
 the cursor position. `Enter` does the same when a selection exists and otherwise
 keeps command mode active. `i`, `q`, or `C-q` returns to input mode.
 
-On tmux 3.6 or newer, when WSL's `clip.exe` bridge is available, those copy keys
-use it asynchronously and suppress OSC 52 for that operation. This avoids a
-terminal clipboard stall while still updating tmux's paste buffer and the
-Windows clipboard. Other terminal environments continue to use tmux's native
-OSC 52 integration.
+On tmux 3.6 or newer, those copy keys prefer `wl-copy --type text/plain` when
+Wayland is available, matching Neovim's native clipboard provider. In WSLg,
+this also updates the Windows clipboard and preserves Unicode text directly.
+Without Wayland, WSL's `clip.exe` bridge remains a fallback when `iconv` is
+available; selections are converted from UTF-8 to UTF-16LE for Windows.
+Both providers run asynchronously and suppress OSC 52 for that operation,
+while still updating tmux's paste buffer. Other terminal environments continue
+to use tmux's native OSC 52 integration.
 
 ## Supported prompts and commands
 

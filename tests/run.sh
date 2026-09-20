@@ -50,7 +50,8 @@ cleanup() {
     tmux -S "${tmux_socket_path}" kill-server >/dev/null 2>&1 || true
   fi
   if [[ -n "${temporary_directory}" && -d "${temporary_directory}" ]]; then
-    rm -f -- "${temporary_directory}/clip.exe" "${temporary_directory}/server.sock"
+    rm -f -- "${temporary_directory}/clip.exe" "${temporary_directory}/wl-copy" "${temporary_directory}/server.sock" \
+      "${temporary_directory}/clipboard.bin" "${temporary_directory}/clipboard.bin.pending"
     rmdir -- "${temporary_directory}" 2>/dev/null || true
   fi
 }
@@ -79,8 +80,21 @@ check_shell_scripts() {
 start_isolated_server() {
   temporary_directory="$(mktemp -d /tmp/beck-tmux-tests.XXXXXXXX)"
   tmux_socket_path="${temporary_directory}/server.sock"
-  ln -s "$(command -v true)" "${temporary_directory}/clip.exe"
-  env -u TMUX PATH="${temporary_directory}:${PATH}" \
+  cat >"${temporary_directory}/clip.exe" <<'CLIPBOARD_STUB'
+#!/bin/sh
+cat >"${BECK_TMUX_TEST_CLIPBOARD_PATH}.pending"
+mv "${BECK_TMUX_TEST_CLIPBOARD_PATH}.pending" "${BECK_TMUX_TEST_CLIPBOARD_PATH}"
+CLIPBOARD_STUB
+  chmod +x "${temporary_directory}/clip.exe"
+  cat >"${temporary_directory}/wl-copy" <<'WAYLAND_STUB'
+#!/bin/sh
+[ "$#" -eq 2 ] && [ "$1" = --type ] && [ "$2" = text/plain ] || exit 2
+cat >"${BECK_TMUX_TEST_CLIPBOARD_PATH}.pending"
+mv "${BECK_TMUX_TEST_CLIPBOARD_PATH}.pending" "${BECK_TMUX_TEST_CLIPBOARD_PATH}"
+WAYLAND_STUB
+  chmod +x "${temporary_directory}/wl-copy"
+  env -u TMUX BECK_TMUX_TEST_CLIPBOARD_PATH="${temporary_directory}/clipboard.bin" \
+    WAYLAND_DISPLAY=beck-test PATH="${temporary_directory}:${PATH}" \
     tmux -S "${tmux_socket_path}" -f "${TMUX_CONFIG_PATH}" \
     new-session -d -s config-test
   pass 'tmux.conf starts an isolated server'
@@ -133,8 +147,65 @@ check_bindings() {
     "$(binding copy-mode-vi v)"
   assert_contains 'copy-mode i returns to input' 'cancel' \
     "$(binding copy-mode-vi i)"
-  assert_contains 'copy-mode y uses the external clipboard bridge' 'copy-pipe -C clip.exe' \
+  assert_contains 'copy-mode y prefers the native Wayland clipboard' 'wl-copy --type text/plain' \
     "$(binding copy-mode-vi y)"
+}
+
+check_clipboard() {
+  local provider_name="$1"
+  local clipboard_encoding="$2"
+  local clipboard_pane_id
+  local copy_key
+  local sample_text
+  local copied_text
+  local attempt
+  local cursor_before
+
+  for copy_key in y C-c Enter; do
+    sample_text="clipboard-${copy_key}: 中文 café 😀"
+    clipboard_pane_id="$(tmux -S "${tmux_socket_path}" new-window -d -P -F '#{pane_id}' \
+      bash -c 'printf "%s\n" "$1"; exec sleep 120' clipboard-test "${sample_text}")"
+    # Wait for the sample to render before entering copy mode.
+    for attempt in {1..100}; do
+      if [[ "$(tmux -S "${tmux_socket_path}" capture-pane -p -t "${clipboard_pane_id}")" == *"${sample_text}"* ]]; then
+        break
+      fi
+      sleep 0.05
+    done
+    tmux -S "${tmux_socket_path}" copy-mode -t "${clipboard_pane_id}"
+    tmux -S "${tmux_socket_path}" send-keys -t "${clipboard_pane_id}" -X history-top
+    tmux -S "${tmux_socket_path}" send-keys -t "${clipboard_pane_id}" 0 v '$'
+    assert_equal "${copy_key}: visual selection is active" '1' \
+      "$(tmux -S "${tmux_socket_path}" display-message -p -t "${clipboard_pane_id}" '#{selection_present}')"
+    cursor_before="$(tmux -S "${tmux_socket_path}" display-message -p -t "${clipboard_pane_id}" '#{copy_cursor_x}:#{copy_cursor_y}')"
+    tmux -S "${tmux_socket_path}" send-keys -t "${clipboard_pane_id}" "${copy_key}"
+    copied_text=""
+    for attempt in {1..100}; do
+      if [[ -f "${temporary_directory}/clipboard.bin" ]]; then
+        copied_text="$(iconv -f "${clipboard_encoding}" -t UTF-8 "${temporary_directory}/clipboard.bin")"
+        [[ "${copied_text}" == "${sample_text}" ]] && break
+      fi
+      sleep 0.05
+    done
+    assert_equal "${copy_key}: ${provider_name} receives lossless Unicode" "${sample_text}" "${copied_text}"
+    assert_equal "${copy_key}: tmux paste buffer retains UTF-8" "${sample_text}" \
+      "$(tmux -S "${tmux_socket_path}" save-buffer -)"
+    assert_equal "${copy_key}: copy clears selection and keeps command mode" 'copy-mode:0' \
+      "$(tmux -S "${tmux_socket_path}" display-message -p -t "${clipboard_pane_id}" '#{pane_mode}:#{selection_present}')"
+    assert_equal "${copy_key}: copy preserves the cursor" "${cursor_before}" \
+      "$(tmux -S "${tmux_socket_path}" display-message -p -t "${clipboard_pane_id}" '#{copy_cursor_x}:#{copy_cursor_y}')"
+    tmux -S "${tmux_socket_path}" kill-pane -t "${clipboard_pane_id}"
+  done
+}
+
+check_clipboard_fallback() {
+  tmux -S "${tmux_socket_path}" set-environment -g WAYLAND_DISPLAY ''
+  tmux -S "${tmux_socket_path}" source-file "${TMUX_CONFIG_PATH}"
+  assert_contains 'without Wayland, copy uses the Windows bridge' 'iconv -f UTF-8 -t UTF-16LE | clip.exe' \
+    "$(binding copy-mode-vi y)"
+  # The previous provider wrote UTF-8; clear its artifact before decoding UTF-16LE.
+  rm -f -- "${temporary_directory}/clipboard.bin"
+  check_clipboard 'Windows bridge' UTF-16LE
 }
 
 check_application_theme() {
@@ -242,7 +313,7 @@ check_window_palette_cache() {
   assert_equal 'applications leave global default namespace unchanged' '#272822' "$(global_option @beck_default_bg)"
 
   tmux -S "${tmux_socket_path}" select-window -t "${light_pane_id}"
-  rendered_windows="$(tmux -S "${tmux_socket_path}" display-message -p '#{W:#{E:window-status-format},#{E:window-status-current-format}}')"
+  rendered_windows="$(tmux -S "${tmux_socket_path}" display-message -p -t "${light_pane_id}" '#{W:#{E:window-status-format},#{E:window-status-current-format}}')"
   assert_contains 'unselected window tag uses the focused light palette' \
     "#[fg=#666660,bg=#fafaf7,nobold,noreverse] ${dark_window_index}  palette-dark " "${rendered_windows}"
   assert_contains 'selected window tag derives its colours from the same palette' \
@@ -253,7 +324,7 @@ check_window_palette_cache() {
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${dark_pane_id}" '#{E:window-style}')"
 
   tmux -S "${tmux_socket_path}" select-window -t "${dark_pane_id}"
-  rendered_windows="$(tmux -S "${tmux_socket_path}" display-message -p '#{W:#{E:window-status-format},#{E:window-status-current-format}}')"
+  rendered_windows="$(tmux -S "${tmux_socket_path}" display-message -p -t "${dark_pane_id}" '#{W:#{E:window-status-format},#{E:window-status-current-format}}')"
   assert_contains 'switch immediately uses cached inactive-tag colours' \
     "#[fg=#888899,bg=#121212,nobold,noreverse] ${light_window_index}  palette-light " "${rendered_windows}"
   assert_contains 'switch immediately uses cached selected-tag colours' \
@@ -263,7 +334,7 @@ check_window_palette_cache() {
     "$(tmux -S "${tmux_socket_path}" show-options -pqv -t "${light_pane_id}" @beck_theme_token)"
   tmux -S "${tmux_socket_path}" select-window -t "${light_pane_id}"
   assert_equal 'switching back restores the cached palette without republishing' '#fafaf7' \
-    "$(tmux -S "${tmux_socket_path}" display-message -p '#{E:@beck_ui_bg}')"
+    "$(tmux -S "${tmux_socket_path}" display-message -p -t "${light_pane_id}" '#{E:@beck_ui_bg}')"
   assert_equal 'switching windows does not republish the other application palette' "${dark_token}" \
     "$(tmux -S "${tmux_socket_path}" show-options -pqv -t "${dark_pane_id}" @beck_theme_token)"
 
@@ -275,18 +346,20 @@ check_window_palette_cache() {
 
   # Replacing a palette invalidates derived tag roles, without keeping old
   # explicit overrides or requiring the inactive application to gain focus.
+  # Keep format queries targeted: after creating another detached session,
+  # an untargeted command may inspect that session instead of config-test.
   env TMUX="${tmux_socket_path},0,0" TMUX_PANE="${dark_pane_id}" \
     "${THEME_SCRIPT_PATH}" set --owner "${dark_owner_pid}" 'bg=#202020' 'muted=#bbbbbb'
   tmux -S "${tmux_socket_path}" select-window -t "${dark_pane_id}"
   assert_equal 'background publication replaces cache and drops old explicit tag colours' '#bbbbbb|#202020' \
-    "$(tmux -S "${tmux_socket_path}" display-message -p '#{E:@beck_ui_window_inactive_fg}|#{E:@beck_ui_window_inactive_bg}')"
+    "$(tmux -S "${tmux_socket_path}" display-message -p -t "${dark_pane_id}" '#{E:@beck_ui_window_inactive_fg}|#{E:@beck_ui_window_inactive_bg}')"
   tmux -S "${tmux_socket_path}" select-window -t "${plain_pane_id}"
   assert_equal 'an unpublished window restores default chrome including inactive tags' '#272822|#a6a69c|#272822' \
-    "$(tmux -S "${tmux_socket_path}" display-message -p '#{E:@beck_ui_bg}|#{E:@beck_ui_window_inactive_fg}|#{E:@beck_ui_window_inactive_bg}')"
+    "$(tmux -S "${tmux_socket_path}" display-message -p -t "${plain_pane_id}" '#{E:@beck_ui_bg}|#{E:@beck_ui_window_inactive_fg}|#{E:@beck_ui_window_inactive_bg}')"
   env TMUX="${tmux_socket_path},0,0" TMUX_PANE="${light_pane_id}" "${THEME_SCRIPT_PATH}" reset --force
   tmux -S "${tmux_socket_path}" select-window -t "${light_pane_id}"
   assert_equal 'cleared cache cannot resurrect an old palette on window selection' '#272822|' \
-    "$(tmux -S "${tmux_socket_path}" display-message -p '#{E:@beck_ui_bg}|#{@beck_palette_bg}')"
+    "$(tmux -S "${tmux_socket_path}" display-message -p -t "${light_pane_id}" '#{E:@beck_ui_bg}|#{@beck_palette_bg}')"
 }
 
 check_theme_recovery() {
@@ -391,10 +464,13 @@ main() {
   trap cleanup EXIT
   require_command bash
   require_command tmux
+  require_command iconv
   check_shell_scripts
   start_isolated_server
   check_options
   check_bindings
+  check_clipboard Wayland UTF-8
+  check_clipboard_fallback
   check_application_theme
   check_theme_recovery
   check_window_palette_cache
