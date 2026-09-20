@@ -97,6 +97,11 @@ uses the kernel's process-start ticks, so wall-clock changes cannot revoke a liv
 application's palette. Other platforms use `ps` start times in UTC.
 No heartbeat is required from the application.
 
+Palette publication and cleanup also invalidate tmux's cached pane colours.
+This lets the pane background return to the night default after leaving a light
+application such as Neovim with `paper-light`, without a config reload. If a pane
+is already stuck, run `~/.config/tmux/scripts/theme.sh reset --force` in its shell.
+
 The publisher defaults to the hook's parent process. Applications invoking the
 hook through a shell wrapper must pass their own PID explicitly, for example
 `theme.sh set --owner 12345 'bg=#282c34'`. The owner must be running in this pane's

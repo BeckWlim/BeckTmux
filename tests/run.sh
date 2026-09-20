@@ -215,17 +215,23 @@ check_application_theme() {
   local second_application_pane_id
   local second_application_owner_pid
   local malformed_entry
+  local original_window_style
+  original_window_style="$(global_option window-style)"
   application_pane_id="$(tmux -S "${tmux_socket_path}" display-message -p '#{pane_id}')"
   tmux -S "${tmux_socket_path}" respawn-pane -k -t "${application_pane_id}" sleep 120
   application_owner_pid="$(tmux -S "${tmux_socket_path}" display-message -p -t "${application_pane_id}" '#{pane_pid}')"
   shell_pane_id="$(tmux -S "${tmux_socket_path}" split-window -d -P -F '#{pane_id}')"
   second_application_pane_id="$(tmux -S "${tmux_socket_path}" split-window -d -P -F '#{pane_id}' sleep 120)"
   second_application_owner_pid="$(tmux -S "${tmux_socket_path}" display-message -p -t "${second_application_pane_id}" '#{pane_pid}')"
+  assert_equal 'renderer starts with the default palette' '#272822|#f8f8f2' \
+    "$(tmux -S "${tmux_socket_path}" display-message -p -t "${application_pane_id}" '#{pane_bg}|#{pane_fg}')"
 
   env TMUX="${tmux_socket_path},0,0" TMUX_PANE="${application_pane_id}" \
     "${THEME_SCRIPT_PATH}" set --owner "${application_owner_pid}" 'bg=#fafaf7' 'fg=#242424' 'green=#3d6815'
   assert_equal 'application publishes pane colours' '#fafaf7|#242424|#3d6815' \
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${application_pane_id}" '#{E:@beck_pane_bg}|#{E:@beck_pane_fg}|#{E:@beck_pane_green}')"
+  assert_equal 'publication refreshes cached renderer colours' '#fafaf7|#242424' \
+    "$(tmux -S "${tmux_socket_path}" display-message -p -t "${application_pane_id}" '#{pane_bg}|#{pane_fg}')"
   assert_equal 'application preserves tmux default night colour' '#272822' "$(global_option @beck_default_bg)"
   assert_equal 'omitted palette roles inherit tmux defaults' '#666666' \
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${application_pane_id}" '#{E:@beck_pane_border}')"
@@ -262,15 +268,27 @@ check_application_theme() {
     "${THEME_SCRIPT_PATH}" set --owner "${application_owner_pid}" 'bg=#eeeeee'
   assert_equal 'replacement drops roles from the previous palette' '#eeeeee|#f8f8f2' \
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${application_pane_id}" '#{E:@beck_pane_bg}|#{E:@beck_pane_fg}')"
+  assert_equal 'replacement refreshes inactive renderer colours and omitted roles' '#eeeeee|#f8f8f2' \
+    "$(tmux -S "${tmux_socket_path}" display-message -p -t "${application_pane_id}" '#{pane_bg}|#{pane_fg}')"
   tmux -S "${tmux_socket_path}" source-file "${TMUX_CONFIG_PATH}"
   assert_equal 'config reload preserves application overrides' '#eeeeee' \
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${application_pane_id}" '#{E:@beck_pane_bg}')"
+  # pane_bg/pane_fg read the renderer's cached colours, unlike E: formats.
+  # Prime that cache while light, then reset without reloading the config.
+  assert_equal 'renderer caches the light application palette' '#eeeeee|#f8f8f2' \
+    "$(tmux -S "${tmux_socket_path}" display-message -p -t "${application_pane_id}" '#{pane_bg}|#{pane_fg}')"
   env TMUX="${tmux_socket_path},0,0" TMUX_PANE="${application_pane_id}" "${THEME_SCRIPT_PATH}" reset --owner "${application_owner_pid}"
   env TMUX="${tmux_socket_path},0,0" TMUX_PANE="${application_pane_id}" "${THEME_SCRIPT_PATH}" reset --owner "${application_owner_pid}"
   assert_equal 'reset is repeatable and restores inherited night colours' '#272822|#f8f8f2' \
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${application_pane_id}" '#{E:@beck_pane_bg}|#{E:@beck_pane_fg}')"
+  assert_equal 'reset restores the renderer as well as palette formats' '#272822|#f8f8f2' \
+    "$(tmux -S "${tmux_socket_path}" display-message -p -t "${application_pane_id}" '#{pane_bg}|#{pane_fg}')"
   assert_equal 'reset leaves other applications alone' '#112233' \
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${second_application_pane_id}" '#{E:@beck_pane_bg}')"
+  assert_equal 'cache refresh preserves the global style format exactly' "${original_window_style}" \
+    "$(global_option window-style)"
+  assert_equal 'cache refresh preserves pane style inheritance' '' \
+    "$(tmux -S "${tmux_socket_path}" show-options -pqv -t "${application_pane_id}" window-style)"
 }
 
 wait_for_pane_format() {
@@ -387,6 +405,8 @@ check_theme_recovery() {
     "${THEME_SCRIPT_PATH}" set --owner "${owner_pid}" 'bg=#eeeeee'
   original_token="$(tmux -S "${tmux_socket_path}" show-options -pqv -t "${recovery_pane_id}" @beck_theme_token)"
   original_identity="$(tmux -S "${tmux_socket_path}" show-options -pqv -t "${recovery_pane_id}" @beck_theme_owner)"
+  assert_equal 'renderer caches light colours before watcher recovery' '#eeeeee' \
+    "$(tmux -S "${tmux_socket_path}" display-message -p -t "${recovery_pane_id}" '#{pane_bg}')"
   sleep 1.2
   assert_equal 'live foreground publisher retains colours across watchdog checks' '#eeeeee' \
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${recovery_pane_id}" '#{E:@beck_pane_bg}')"
@@ -398,6 +418,8 @@ check_theme_recovery() {
   wait_for_pane_format "${recovery_pane_id}" '#{pane_current_command}' bash
   wait_for_pane_format "${recovery_pane_id}" '#{E:@beck_pane_bg}|#{@beck_theme_token}' '#272822|'
   pass 'suspended application restores defaults without application cleanup'
+  assert_equal 'watcher recovery clears the renderer light background' '#272822' \
+    "$(tmux -S "${tmux_socket_path}" display-message -p -t "${recovery_pane_id}" '#{pane_bg}')"
   if env TMUX="${tmux_socket_path},0,0" TMUX_PANE="${recovery_pane_id}" \
       "${THEME_SCRIPT_PATH}" set --owner "${owner_pid}" 'bg=#eeeeee' >/dev/null 2>&1; then
     fail 'suspended owner was allowed to republish'
@@ -408,6 +430,8 @@ check_theme_recovery() {
   wait_for_pane_format "${recovery_pane_id}" '#{pane_current_command}' sleep
   env TMUX="${tmux_socket_path},0,0" TMUX_PANE="${recovery_pane_id}" \
     "${THEME_SCRIPT_PATH}" set --owner "${owner_pid}" 'bg=#dddddd'
+  assert_equal 'resumed application restores renderer colours' '#dddddd' \
+    "$(tmux -S "${tmux_socket_path}" display-message -p -t "${recovery_pane_id}" '#{pane_bg}')"
   # A stale watcher must not clear a newer publication, even if its process
   # identity check would fail. This exercises the real internal entry point.
   "${THEME_SCRIPT_PATH}" _watch "${tmux_socket_path}" "${recovery_pane_id}" \
@@ -419,6 +443,8 @@ check_theme_recovery() {
   wait_for_pane_format "${recovery_pane_id}" '#{pane_current_command}' bash
   wait_for_pane_format "${recovery_pane_id}" '#{E:@beck_pane_bg}|#{@beck_theme_owner}' '#272822|'
   pass 'killing the entire application job restores defaults without cleanup'
+  assert_equal 'killed application leaves the renderer at night defaults' '#272822' \
+    "$(tmux -S "${tmux_socket_path}" display-message -p -t "${recovery_pane_id}" '#{pane_bg}')"
 
   tmux -S "${tmux_socket_path}" send-keys -t "${recovery_pane_id}" 'sleep 120' Enter
   wait_for_pane_format "${recovery_pane_id}" '#{pane_current_command}' sleep
@@ -440,9 +466,13 @@ check_theme_recovery() {
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${recovery_pane_id}" '#{E:@beck_pane_bg}')"
   env TMUX="${tmux_socket_path},0,0" TMUX_PANE="${recovery_pane_id}" \
     "${THEME_SCRIPT_PATH}" set --owner "${replacement_owner_pid}" 'bg=#bbbbbb'
+  assert_equal 'renderer caches light colours before manual recovery' '#bbbbbb' \
+    "$(tmux -S "${tmux_socket_path}" display-message -p -t "${recovery_pane_id}" '#{pane_bg}')"
   env TMUX="${tmux_socket_path},0,0" TMUX_PANE="${recovery_pane_id}" "${THEME_SCRIPT_PATH}" reset --force
   assert_equal 'manual force reset restores defaults regardless of owner' '#272822' \
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${recovery_pane_id}" '#{E:@beck_pane_bg}')"
+  assert_equal 'manual force reset restores renderer defaults' '#272822' \
+    "$(tmux -S "${tmux_socket_path}" display-message -p -t "${recovery_pane_id}" '#{pane_bg}')"
 
   local handoff_pane_id
   local handoff_owner_pid

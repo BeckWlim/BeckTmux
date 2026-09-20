@@ -62,6 +62,10 @@ owner_identity() {
 
 clear_commands() {
   local pane_id="$1"
+  local socket_path="$2"
+  local window_style_option
+  # show-options emits a quoted tmux argument, including literal formats.
+  window_style_option="$(tmux -N -S "${socket_path}" show-options -g window-style)" || return 1
   local reset_role
   for reset_role in "${PALETTE_ROLES[@]}"; do
     printf 'set-option -pu -t %s @beck_palette_%s ; ' "${pane_id}" "${reset_role}"
@@ -69,6 +73,11 @@ clear_commands() {
     printf 'set-option -pu -t %s @beck_%s ; ' "${pane_id}" "${reset_role}"
   done
   printf 'set-option -pu -t %s @beck_theme_owner ; set-option -pu -t %s @beck_theme_token ; ' "${pane_id}" "${pane_id}"
+  # User-option updates redraw clients but do not invalidate tmux's cached
+  # pane colours. Touch a style option after the palette transaction so both
+  # active and inactive caches are rebuilt. Reapply the current global value
+  # without creating local overrides or appending separators to the style.
+  printf 'set-option -g %s ; ' "${window_style_option}"
 }
 
 watch_owner() {
@@ -80,11 +89,13 @@ watch_owner() {
   local expected_token="$6"
   local current_token current_identity
   local reset_commands
-  reset_commands="$(clear_commands "${pane_id}")"
   while current_token="$(tmux -N -S "${socket_path}" show-options -pqv -t "${pane_id}" @beck_theme_token 2>/dev/null)"; do
     [[ "${current_token}" == "${expected_token}" ]] || return 0
     if ! current_identity="$(owner_identity "${owner_pid}" "${pane_tty}")" ||
         [[ "${current_identity}" != "${expected_identity}" ]]; then
+      # Read the current style at expiry, not when the watcher starts: a
+      # configuration reload may have changed it during the application run.
+      reset_commands="$(clear_commands "${pane_id}" "${socket_path}")" || return 0
       # Compare and clear inside tmux's command queue. A newer publication
       # between the process check and this command must survive the old watcher.
       tmux -N -S "${socket_path}" if-shell -F -t "${pane_id}" \
@@ -144,8 +155,8 @@ main() {
   [[ "${owner_pid}" =~ ^[1-9][0-9]*$ ]] || fail 'owner must be a positive process ID'
 
   local reset_commands
-  reset_commands="$(clear_commands "${pane_id}")"
   if [[ "${action}" == reset ]]; then
+    reset_commands="$(clear_commands "${pane_id}" "${socket_path}")"
     if "${force_reset}"; then
       tmux -N -S "${socket_path}" source-file - <<<"${reset_commands}"
     else
@@ -181,8 +192,11 @@ main() {
         "${supplied_roles[${palette_role}]}" ';')
     fi
   done
+  local window_style_value
+  window_style_value="$(tmux -N -S "${socket_path}" show-options -gv window-style)"
   tmux_commands+=(set-option -p -t "${pane_id}" @beck_theme_owner "${publishing_identity}" ';'
     set-option -p -t "${pane_id}" @beck_theme_token "${publication_token}" ';'
+    set-option -g window-style "${window_style_value}" ';'
     run-shell -b -t "${pane_id}" "${watcher_format}")
   # -N refuses to start a server if the application's original server is gone.
   # The watcher belongs to tmux's job process, not the application's process
