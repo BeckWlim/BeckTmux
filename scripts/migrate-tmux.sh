@@ -185,7 +185,7 @@ back_up_installed_tmux() {
   local installed_backup_path
   local backup_version_output
 
-  [[ -x "${INSTALLED_TMUX_PATH}" ]] || return
+  [[ -x "${INSTALLED_TMUX_PATH}" ]] || return 0
   installed_version_output="$("${INSTALLED_TMUX_PATH}" -V)"
   installed_version="${installed_version_output#tmux }"
   [[ "${installed_version}" =~ ^[0-9]+([.][0-9]+)+[a-z]?$ ]] || \

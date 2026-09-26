@@ -121,7 +121,7 @@ check_options() {
 
   assert_equal 'default terminal supports 256 colours' 'tmux-256color' \
     "$(global_option default-terminal)"
-  assert_equal 'prefix is C-a' 'C-a' "$(global_option prefix)"
+  assert_equal 'prefix is C-s' 'C-s' "$(global_option prefix)"
   assert_equal 'terminal focus events are enabled' 'on' "$(global_option focus-events)"
   assert_equal 'mouse support is enabled' 'on' "$(global_option mouse)"
   assert_equal 'status keys use vi mode' 'vi' "$(global_option status-keys)"
@@ -138,6 +138,11 @@ check_options() {
 }
 
 check_bindings() {
+  assert_contains 'double prefix sends C-s to the application' 'send-prefix' \
+    "$(binding prefix C-s)"
+  assert_equal 'secondary prefix is disabled' 'None' "$(global_option prefix2)"
+  assert_equal 'old C-b prefix binding is removed' '' \
+    "$(binding prefix C-b 2>/dev/null || true)"
   assert_contains 'prefix j enters copy mode' 'copy-mode' "$(binding prefix j)"
   assert_contains 'prefix h creates a horizontal split' 'split-window -h' \
     "$(binding prefix h)"
@@ -147,6 +152,11 @@ check_bindings() {
     "$(binding copy-mode-vi v)"
   assert_contains 'copy-mode i returns to input' 'cancel' \
     "$(binding copy-mode-vi i)"
+  assert_contains 'input C-h sends Left' 'send-keys Left' "$(binding root C-h)"
+  assert_contains 'input C-j sends Down' 'send-keys Down' "$(binding root C-j)"
+  assert_contains 'input C-k sends Up' 'send-keys Up' "$(binding root C-k)"
+  assert_contains 'input C-l sends Right' 'send-keys Right' "$(binding root C-l)"
+  assert_contains 'input C-d sends Backspace' 'send-keys BSpace' "$(binding root C-d)"
   assert_contains 'copy-mode y prefers the native Wayland clipboard' 'wl-copy --type text/plain' \
     "$(binding copy-mode-vi y)"
 }

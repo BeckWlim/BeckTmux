@@ -114,7 +114,7 @@ other platforms need compatible `ps` output.
 After updating the watcher, republish the application palette once (for example,
 reapply the Neovim colorscheme) to replace any watcher already running.
 
-After updating from the earlier hook, reload tmux with `C-a R` and let applications
+After updating from the earlier hook, reload tmux with `C-s R` and let applications
 republish once (for example by reapplying the Neovim colorscheme). Old pane overrides
 are removed on the next `set` or `reset`; subsequent switches use the stored palette.
 
@@ -186,7 +186,7 @@ The left side of the status bar always shows the active terminal context:
 - `[ COMMAND ]` — tmux scrollback navigation is active.
 - `[ VISUAL ]` — a scrollback selection is active.
 
-While the `C-a` prefix is held, the right status cluster shows a final `│ ⟐`
+While the `C-s` prefix is held, the right status cluster shows a final `│ ⟐`
 segment as a small abstract command-layer cue rather than a keyboard glyph.
 
 The right side begins with `[ FOCUSED ]` in green while the terminal window
@@ -205,12 +205,18 @@ On a normal shell pane, press `Esc` to enter `COMMAND`. Use arrow keys or
 copy, and `i` to return to `INPUT`. The selected text uses the same subdued
 `#3a3d3f` background as Neovim's `CursorLine`.
 
+In `INPUT` mode, `Ctrl+h/j/k/l` sends Left/Down/Up/Right to the foreground
+application without a prefix. `Ctrl+d` sends Backspace, replacing delete/EOF.
+These replace the application's native shortcuts
+for those keys, including Ctrl+h backspace and Ctrl+l clear-screen. Up/Down
+follow the application's behavior, such as shell history or multiline navigation.
+
 Neovim and other full-screen programs retain their own `Esc` behavior. The
 tmux `Esc` binding only captures known shell processes (`bash`, `zsh`, `fish`,
 `sh`, and `dash`). Codex (and any other non-shell process) receives the raw
 `Esc`, so Codex can use it for its own visual/context inspection instead of
 being forced into tmux copy mode.
-To inspect Codex output in tmux, use `C-a j` and then `v`; this explicit
+To inspect Codex output in tmux, use `C-s j` and then `v`; this explicit
 prefix path remains available without consuming Codex's `Esc` key.
 
 Tmux also exports `COLORTERM=truecolor` and advertises the RGB terminal
@@ -221,8 +227,15 @@ original environment.
 
 ## Key bindings
 
-The only tmux prefix is `C-a`; `C-q` and `C-Space` are deliberately left
-available to terminal applications, Neovim, and input methods. Press `C-a`,
+When switching from the old prefix, press `C-b R` once to load this change.
+Afterward, use `C-s R` to reload. Press `C-s C-s` to send a literal `Ctrl+S`
+to an application (for example, its Save shortcut).
+
+In scrollback command mode and visual mode, `Ctrl+A` moves to the beginning
+of the line and `Ctrl+E` moves to the end, without the tmux prefix.
+
+The only tmux prefix is `C-s`; `C-a`, `C-b`, `C-q`, and `C-Space` are deliberately left
+available to terminal applications, Neovim, and input methods. Press `C-s`,
 then:
 
 | Key | Action |
@@ -264,10 +277,10 @@ then `#272822` with green text after `Esc` switches to command mode. Prompts
 retain their original command key (`:`, `/`, `?`, `f`, `t`, `F`, or `T`) instead
 of adding descriptive labels such as `(goto line)`.
 
-- `C-a :` — enter a general tmux command.
-- `C-a f` — search for a window.
-- `C-a ,` — rename the current window.
-- `C-a .` — move the current window.
+- `C-s :` — enter a general tmux command.
+- `C-s f` — search for a window.
+- `C-s ,` — rename the current window.
+- `C-s .` — move the current window.
 - Copy mode `:` — go to a line number.
 - Copy mode `/` / `?` — search forward / backward.
 - Copy mode `f` / `t` / `F` / `T` — jump forward, to-forward, backward, or to-backward.
@@ -367,7 +380,7 @@ TMUX_TMPDIR=/tmp/tmux-test tmux -L beck-check \
 TMUX_TMPDIR=/tmp/tmux-test tmux -L beck-check kill-server
 ```
 
-Reload an attached server with `C-a R`.
+Reload an attached server with `C-s R`.
 
 If Neovim was already running when the true-colour setting changed, start a
 fresh pane (or restart the tmux server) so it inherits `COLORTERM=truecolor`.

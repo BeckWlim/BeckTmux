@@ -237,7 +237,7 @@ main() {
     warn "setup completed with ${OPTIONAL_FAILURES} optional step(s) failed; see warnings above"
   fi
   info "configuration: ${PROJECT_DIR}/tmux.conf"
-  info 'reload an attached server with: C-a R'
+  info 'reload an attached server with: C-b R'
   info 'reload shell customizations with: source ~/.bashrc'
 }
 
