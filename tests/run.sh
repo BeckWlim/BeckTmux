@@ -155,8 +155,11 @@ check_bindings() {
   assert_contains 'input C-h sends Left' 'send-keys Left' "$(binding root C-h)"
   assert_contains 'input C-j sends Down' 'send-keys Down' "$(binding root C-j)"
   assert_contains 'input C-k sends Up' 'send-keys Up' "$(binding root C-k)"
+  assert_contains 'shell Ctrl-p invokes clipboard paste' 'paste-clipboard.sh' "$(binding root C-p)"
+  assert_contains 'application Ctrl-p passes through' 'send-keys C-p' "$(binding root C-p)"
   assert_contains 'input C-l sends Right' 'send-keys Right' "$(binding root C-l)"
-  assert_contains 'input C-d sends Backspace' 'send-keys BSpace' "$(binding root C-d)"
+  assert_equal 'input C-d retains native application behavior' '' \
+    "$(binding root C-d 2>/dev/null || true)"
   assert_contains 'copy-mode y prefers the native Wayland clipboard' 'wl-copy --type text/plain' \
     "$(binding copy-mode-vi y)"
 }
@@ -506,6 +509,7 @@ main() {
   require_command tmux
   require_command iconv
   check_shell_scripts
+  "${TESTS_DIRECTORY}/clipboard-paste.sh"
   start_isolated_server
   check_options
   check_bindings

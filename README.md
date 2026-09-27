@@ -206,10 +206,17 @@ copy, and `i` to return to `INPUT`. The selected text uses the same subdued
 `#3a3d3f` background as Neovim's `CursorLine`.
 
 In `INPUT` mode, `Ctrl+h/j/k/l` sends Left/Down/Up/Right to the foreground
-application without a prefix. `Ctrl+d` sends Backspace, replacing delete/EOF.
+application without a prefix. `Ctrl+d` retains the foreground application's native behavior.
 These replace the application's native shortcuts
 for those keys, including Ctrl+h backspace and Ctrl+l clear-screen. Up/Down
 follow the application's behavior, such as shell history or multiline navigation.
+
+In shell panes, `Ctrl+p` pastes the system clipboard at the cursor. Use `Ctrl+k`
+or Up for the previous command, and `Ctrl+j` or Down for the next command.
+Other applications receive their own `Ctrl+p` unchanged. Clipboard paste uses
+`wl-paste` on Wayland, `xclip`/`xsel` on X11, or `pbpaste` on macOS; an unavailable
+clipboard reports an error instead of pasting a stale tmux buffer. Multiline text
+uses bracketed paste when supported by the shell. `C-s ]` still pastes tmux's buffer.
 
 Neovim and other full-screen programs retain their own `Esc` behavior. The
 tmux `Esc` binding only captures known shell processes (`bash`, `zsh`, `fish`,
