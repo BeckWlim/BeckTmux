@@ -1,0 +1,77 @@
+# Beck Bash prompt: subtle text colours on the terminal's default background.
+"$schema" = 'https://starship.rs/config-schema.json'
+add_newline = false
+# Separate command input from context; align both with command output.
+format = '$username[@](identity)$hostname[ | ](muted)$directory$git_branch$git_commit$git_state$git_status$python$line_break$character'
+palette = 'beck'
+
+[palettes.beck]
+pink = '#f92672'
+muted = '#a6a69c'
+input = '#e6e6de'
+identity = '#8f9fa9'
+git = '#9fa98f'
+environment = '#b1a08c'
+
+[username]
+show_always = true
+style_user = 'identity'
+style_root = 'bold pink'
+format = '[$user]($style)'
+
+[hostname]
+ssh_only = false
+style = 'identity'
+format = '[$hostname]($style)'
+
+[directory]
+style = 'muted'
+format = '[ $path]($style)[$read_only]($read_only_style)'
+read_only = ' ro'
+read_only_style = 'pink'
+truncate_to_repo = false
+truncation_length = 4
+truncation_symbol = '…/'
+
+[git_branch]
+symbol = ' '
+style = 'git'
+format = '[ | ](muted)[$symbol$branch]($style)'
+only_attached = true
+
+[git_commit]
+style = 'git'
+format = '[ | ](muted)[ $hash]($style)'
+only_detached = true
+
+[git_state]
+style = 'pink'
+format = '[ $state( $progress_current/$progress_total)]($style)'
+
+[git_status]
+style = 'git'
+format = '([ $all_status$ahead_behind]($style))'
+modified = '*'
+untracked = '?'
+staged = '+'
+deleted = 'x'
+renamed = '~'
+conflicted = '!'
+stashed = '≡'
+ahead = '↑${count}'
+behind = '↓${count}'
+diverged = '↑${ahead_count}↓${behind_count}'
+
+# Show an active environment without running Python or adding a version label.
+[python]
+style = 'environment'
+format = '([ | ](muted)[venv:$virtualenv]($style))'
+detect_extensions = []
+detect_files = []
+detect_folders = []
+
+[character]
+format = '$symbol '
+success_symbol = '[\$](input)'
+error_symbol = '[\$](pink)'
+vimcmd_symbol = '[\$](input)'

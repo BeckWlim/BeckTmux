@@ -14,3 +14,6 @@ tmux.conf.bak.*
 .env
 .env.*
 !.env.example
+
+# Optional clipboard plugin and locally extracted runtime packages
+/plugins/

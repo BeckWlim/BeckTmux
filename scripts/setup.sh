@@ -16,6 +16,8 @@ SYNTH_DIR="${HOME_DIR}/.local/share/synth-shell"
 OVERWRITE_CONFIG=0
 SKIP_EZA=0
 SKIP_SYNTH_SHELL=0
+ENABLE_COMPLETION=0
+ENABLE_CLIPBOARD=0
 OPTIONAL_FAILURES=0
 
 info() { printf '[tmux-setup] %s\n' "$*"; }
@@ -23,12 +25,14 @@ warn() { printf '[tmux-setup] warning: %s\n' "$*" >&2; }
 
 usage() {
   cat <<'EOF'
-Usage: setup.sh [--overwrite] [--skip-eza] [--skip-synth-shell]
+Usage: setup.sh [--overwrite] [--skip-eza] [--skip-synth-shell] [--completion] [--clipboard]
 
 Options:
   --overwrite        replace tmux.conf after making a timestamped backup
   --skip-eza         skip eza installation and alias changes
   --skip-synth-shell  skip synth-shell installation and separator repair
+  --completion       install and configure enhanced Bash Tab completion
+  --clipboard        install system clipboard history (Pop!_OS/Linux or WSL)
   -h, --help         show this help
 EOF
 }
@@ -39,6 +43,8 @@ parse_args() {
       --overwrite) OVERWRITE_CONFIG=1 ;;
       --skip-eza) SKIP_EZA=1 ;;
       --skip-synth-shell) SKIP_SYNTH_SHELL=1 ;;
+      --completion) ENABLE_COMPLETION=1 ;;
+      --clipboard) ENABLE_CLIPBOARD=1 ;;
       -h|--help) usage; exit 0 ;;
       *) usage >&2; return 2 ;;
     esac
@@ -79,6 +85,12 @@ install_tmux_config() {
     info "backed up existing config to ${backup_path}"
   fi
   cp -p "${source_config}" "${TMUX_CONFIG}"
+  # Keep the configuration's runtime helpers beside it on separate installs.
+  mkdir -p "${TMUX_CONFIG_DIR}/scripts"
+  local helper_script
+  for helper_script in theme.sh clipboard.sh clipboard-history.sh; do
+    cp -p "${PROJECT_DIR}/scripts/${helper_script}" "${TMUX_CONFIG_DIR}/scripts/${helper_script}"
+  done
   info "installed ${TMUX_CONFIG}"
 }
 
@@ -232,6 +244,13 @@ main() {
   fi
   if ((SKIP_EZA == 0)); then
     run_optional_step 'eza aliases' wire_eza_aliases
+  fi
+  if ((ENABLE_COMPLETION)); then
+    run_optional_step 'Bash completion' "${PROJECT_DIR}/scripts/setup-completion.sh"
+  fi
+  if ((ENABLE_CLIPBOARD)); then
+    run_optional_step 'system clipboard history' env BECK_TMUX_DIRECTORY="${TMUX_CONFIG_DIR}" \
+      "${PROJECT_DIR}/scripts/setup-clipboard.sh" --install-deps
   fi
   if ((OPTIONAL_FAILURES > 0)); then
     warn "setup completed with ${OPTIONAL_FAILURES} optional step(s) failed; see warnings above"

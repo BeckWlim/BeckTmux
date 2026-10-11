@@ -1,19 +1,27 @@
 # Beck tmux
 
-This directory contains the terminal layer for the Beck workspace. Neovim owns
-editor rendering; tmux owns panes, terminal history, and the bottom context bar.
+This directory contains the terminal layer for the Beck workspace. Tmux owns
+panes, terminal history, clipboard routing, and the bottom context bar.
 The default night palette uses Monokai values: `#272822` base,
 `#3a3d3f` CursorLine/selection, `#a6e22e` focus, `#66d9ef` context, and
-`#f8f8f2` primary text.
+terminal-default primary text.
 
 ## Files
 
 - `tmux.conf` — self-contained tmux configuration; no oh-my-tmux or TPM required.
 - `scripts/setup.sh` — idempotently installs/checks tmux, eza, and synth-shell, then adds
   guarded eza aliases when they are missing.
+- `scripts/setup-completion.sh` — optional ble.sh installation and Bash Tab setup.
+- `shell/completion.bash` — Vim input editing, mode tag, history suggestions, and completion menus.
+- `scripts/setup-prompt.sh` — backs up Bash configuration and switches its prompt to Starship.
+- `shell/prompt.bash`, `shell/starship.toml` — prompt initialization and subtle context text colours.
 - `scripts/migrate-tmux.sh` — safely builds, validates, installs, and switches to a
   requested tmux release while preserving the currently installed binary.
 - `scripts/theme.sh` — opt-in application hook to set or reset a pane's palette.
+- `scripts/clipboard.sh` — shared clipboard policy for local and SSH clients.
+- `scripts/setup-clipboard.sh` — optional tmux-fzf installation and clipboard history setup.
+- `scripts/clipboard-history.sh` — system history picker and lossless paste adapter.
+- `scripts/windows-clipboard-history.ps1` — Windows clipboard history provider for WSL.
 - `tests/run.sh` — smoke-tests shell entry points and the effective configuration on
   an isolated tmux server.
 - `README.md` — this usage and integration guide.
@@ -54,8 +62,7 @@ Applications publish this standard set of roles through the hook:
 | `window_inactive_fg` | Unselected window label; the application's `muted` |
 | `window_inactive_bg` | Unselected window background; the application's `bg` |
 
-The existing Neovim palette roles remain supported. The four `window_*` roles
-are optional; their fallbacks derive from the same application's base palette.
+The four `window_*` roles are optional; their fallbacks derive from the same application's base palette.
 For consistent light themes, applications should publish all base roles used by
 the UI rather than leave individual colours at their night defaults.
 
@@ -83,8 +90,8 @@ The status bar, selected and unselected window tags, pane borders, and prompts
 all use the focused pane's UI palette. Inactive window tags explicitly set both
 foreground and background, without inheriting reverse or bold highlighting.
 Terminal contents and copy selections retain their own pane's colours. Returning
-to an ordinary shell pane shows the default night palette. Tmux has no Neovim
-dependency and does not read application theme files.
+to an ordinary shell pane shows the default night palette. Tmux does not read
+application theme files.
 
 Applications should call `set` on startup, colour changes, and resume, and `reset`
 before exit or suspend. Each publication also starts a tmux-owned watcher that
@@ -99,7 +106,7 @@ No heartbeat is required from the application.
 
 Palette publication and cleanup also invalidate tmux's cached pane colours.
 This lets the pane background return to the night default after leaving a light
-application such as Neovim with `paper-light`, without a config reload. If a pane
+application, without a config reload. If a pane
 is already stuck, run `~/.config/tmux/scripts/theme.sh reset --force` in its shell.
 
 The publisher defaults to the hook's parent process. Applications invoking the
@@ -111,72 +118,12 @@ generation token, so an old watcher cannot clear a newer publication either.
 Config reloads preserve valid overrides, and watchers stop after reset, ownership
 replacement, pane removal, or server shutdown. Recovery has been tested on Linux;
 other platforms need compatible `ps` output.
-After updating the watcher, republish the application palette once (for example,
-reapply the Neovim colorscheme) to replace any watcher already running.
+After updating the watcher, republish the application palette once to replace
+any watcher already running.
 
 After updating from the earlier hook, reload tmux with `C-s R` and let applications
-republish once (for example by reapplying the Neovim colorscheme). Old pane overrides
+republish once. Old pane overrides
 are removed on the next `set` or `reset`; subsequent switches use the stored palette.
-
-For the local BeckNvim configuration, this optional Lua snippet uses its existing
-`config.ui.palette.resolve()` boundary. Add it to Neovim startup to opt in; the
-tmux configuration does not install or enable it automatically:
-
-```lua
-if vim.env.TMUX and vim.env.TMUX_PANE then
-  local hook_path = vim.fn.expand('~/.config/tmux/scripts/theme.sh')
-  local owner_pid = tostring(vim.fn.getpid())
-  local application_active = true
-  local group = vim.api.nvim_create_augroup('beck_tmux_theme', { clear = true })
-
-  local function call_hook(arguments)
-    local command = { hook_path }
-    vim.list_extend(command, arguments)
-    -- Serialize updates so an earlier palette cannot arrive after reset.
-    local result = vim.system(command, { text = true }):wait(1000)
-    if result.code ~= 0 then
-      vim.schedule(function()
-        vim.notify('tmux theme: ' .. (result.stderr or 'hook failed'), vim.log.levels.WARN)
-      end)
-    end
-  end
-
-  local function publish()
-    if not application_active then return end
-    local colors = require('config.ui.palette').resolve()
-    local roles = {
-      bg = colors.background, fg = colors.foreground,
-      cursor = colors.selection, border = colors.border, muted = colors.muted,
-      green = colors.syntax.func, cyan = colors.syntax.type,
-    }
-    local arguments = { 'set', '--owner', owner_pid }
-    for role, color in pairs(roles) do
-      arguments[#arguments + 1] = string.format('%s=#%06x', role, color)
-    end
-    call_hook(arguments)
-  end
-
-  vim.api.nvim_create_autocmd({ 'VimEnter', 'ColorScheme', 'VimResume', 'ShellCmdPost' }, {
-    group = group,
-    callback = function()
-      application_active = true
-      -- Read colours after the colorscheme's highlight callbacks finish.
-      vim.schedule(publish)
-    end,
-  })
-  vim.api.nvim_create_autocmd({ 'VimLeavePre', 'VimSuspend' }, {
-    group = group,
-    callback = function()
-      application_active = false
-      call_hook({ 'reset', '--owner', owner_pid })
-    end,
-  })
-  vim.schedule(publish)
-end
-```
-
-The example needs Neovim 0.10+ and the local hook script. Other applications can
-call the same `set`/`reset` interface with their own palette.
 
 ## Mode context
 
@@ -195,15 +142,15 @@ uses terminal focus events, so it tracks focus moving between terminal windows
 as well as between applications. Focus hooks target and refresh the affected
 client immediately; a one-second periodic update covers missed terminal events.
 
-Each pane has a small top border tag such as `◈ P1 bash` or `○ P2 nvim`.
+Each pane has a small top border tag such as `◈ P1 bash` or `○ P2 less`.
 `◈` identifies the focused pane and its `◈ P#` label is green; `○` marks the
 others. Pane borders stay neutral so the tag is the only focus accent. Window
 and pane numbering both start at 1.
 
-On a normal shell pane, press `Esc` to enter `COMMAND`. Use arrow keys or
+Press `C-s j` to enter tmux `COMMAND` mode. Use arrow keys or
 `h/j/k/l` to move the free history cursor. Press `v` to enter `VISUAL`, `y` to
-copy, and `i` to return to `INPUT`. The selected text uses the same subdued
-`#3a3d3f` background as Neovim's `CursorLine`.
+copy, and `i` to return to `INPUT`. Selected text uses a subdued `#3a3d3f`
+background.
 
 In `INPUT` mode, `Ctrl+h/j/k/l` sends Left/Down/Up/Right to the foreground
 application without a prefix. `Ctrl+d` retains the foreground application's native behavior.
@@ -215,17 +162,12 @@ Use your terminal’s native paste shortcut for the system clipboard.
 `C-s ]` pastes tmux’s buffer. `Ctrl+p` passes through to the foreground application,
 including previous-command history in shells that use that shortcut.
 
-Neovim and other full-screen programs retain their own `Esc` behavior. The
-tmux `Esc` binding only captures known shell processes (`bash`, `zsh`, `fish`,
-`sh`, and `dash`). Codex (and any other non-shell process) receives the raw
-`Esc`, so Codex can use it for its own visual/context inspection instead of
-being forced into tmux copy mode.
-To inspect Codex output in tmux, use `C-s j` and then `v`; this explicit
-prefix path remains available without consuming Codex's `Esc` key.
+`Esc` passes through to the foreground shell or application. Bash can use it
+for Vim editing of the current command, and full-screen programs retain their
+own `Esc` behavior. To inspect terminal output in tmux, use `C-s j` and then `v`.
 
 Tmux also exports `COLORTERM=truecolor` and advertises the RGB terminal
-feature. This keeps Neovim's GUI-only highlight groups (including the green
-dashboard sections) intact inside tmux. After changing this setting, reload
+feature. This preserves applications' 24-bit colours inside tmux. After changing this setting, reload
 the config and create a fresh pane; already-running processes keep their
 original environment.
 
@@ -239,7 +181,7 @@ In scrollback command mode and visual mode, `Ctrl+A` moves to the beginning
 of the line and `Ctrl+E` moves to the end, without the tmux prefix.
 
 The only tmux prefix is `C-s`; `C-a`, `C-b`, `C-q`, and `C-Space` are deliberately left
-available to terminal applications, Neovim, and input methods. Press `C-s`,
+available to terminal applications and input methods. Press `C-s`,
 then:
 
 | Key | Action |
@@ -259,20 +201,85 @@ then:
 | `=` / `+` | Even-horizontal / even-vertical layout |
 | `j` | Enter copy mode manually |
 | `]` | Paste the latest buffer |
+| `f` | Search system clipboard history and paste one text item |
 
 Inside copy mode, `v` starts selection. Mouse drag selections stay active after
 release. `y`/`C-c` copy and clear the selection while preserving command mode and
 the cursor position. `Enter` does the same when a selection exists and otherwise
 keeps command mode active. `i`, `q`, or `C-q` returns to input mode.
 
-On tmux 3.6 or newer, those copy keys prefer `wl-copy --type text/plain` when
-Wayland is available, matching Neovim's native clipboard provider. In WSLg,
+On tmux 3.6 or newer, local clients prefer `wl-copy --type text/plain` when
+Wayland is available. In WSLg,
 this also updates the Windows clipboard and preserves Unicode text directly.
 Without Wayland, WSL's `clip.exe` bridge remains a fallback when `iconv` is
 available; selections are converted from UTF-8 to UTF-16LE for Windows.
-Both providers run asynchronously and suppress OSC 52 for that operation,
-while still updating tmux's paste buffer. Other terminal environments continue
-to use tmux's native OSC 52 integration.
+`scripts/clipboard.sh` chooses the route at keypress time for the calling client.
+On Linux/WSL it reads that client's SSH environment, so an SSH client uses OSC 52
+even when sharing a session started on the local desktop. Local clients keep
+the native provider, which runs asynchronously and suppresses OSC 52 for that
+operation. Tmux owns the paste buffer and OSC 52 delivery. With no native
+provider, copying uses OSC 52 as well. Paste local clipboard text with your
+terminal's Paste action, or use `C-s ]` for the latest tmux buffer.
+
+### System clipboard history
+
+Press **`C-s f`**, select an item with `j`/`k` or Up/Down, and press `o` or Enter
+to paste into the pane that opened the picker. It opens in selection mode;
+`/` enters search and Ctrl-G returns to selection. In search mode, type any text
+(including `q` and `o`), press Enter to paste, or Ctrl-Q to quit. In selection mode,
+`q` quits; Escape closes either mode without pasting. The list is on the left and the wrapped
+preview on the right (55% of the popup width). Popup height follows the history
+length, with up to 12 visible entries and scrolling for longer histories. This uses the
+optional [tmux-fzf](https://github.com/sainnhe/tmux-fzf) plugin's clipboard entry,
+with a maintained adapter that snapshots text history, preserves Unicode and
+trailing newlines, and honours application bracketed paste. Clipboard changes
+while the picker is open do not change the selected item's contents.
+
+The popup, list and preview share tmux's existing `@beck_ui_*` palette roles:
+`bg`/`fg` for normal text, `cursor` for the selected row, `green` for focus and
+matching, `muted` for hints, `cyan` for counts, and `border` for the frame and
+preview divider. These resolve the focused application's palette with the
+`@beck_default_*` fallback. There is no separate clipboard colour palette.
+
+Install through the existing setup entry point:
+
+```sh
+./scripts/setup.sh --clipboard
+```
+
+To install only this integration, use `./scripts/setup-clipboard.sh --install-deps`.
+Both reuse existing tools. Pop!_OS, Ubuntu and Debian use their configured apt
+repositories for `git`, `fzf` and (on Linux desktops) `copyq`; setup does not add
+a repository, pin a distro release, or upgrade the OS. Missing optional packages
+are reported without preventing the rest of `setup.sh` from completing.
+
+On Linux, CopyQ records desktop clipboard changes. Setup adds a desktop autostart
+entry if absent; start it for the current login with
+`./scripts/clipboard-history.sh start`, then reload using `C-s R`.
+CopyQ must be running when text is copied; past copies from before recording
+started cannot be recovered. On GNOME/Pop!_OS 22.04, the distro's older CopyQ
+works with the X11 session. Wayland capture depends on desktop protocols; older
+CopyQ may require its XWayland workaround, while newer versions support additional
+compositors. See [CopyQ's Wayland notes](https://copyq.readthedocs.io/en/latest/known-issues.html).
+Pop!_OS 24.04/COSMIC monitoring needs verification on that desktop.
+
+In WSL, the provider reads **Windows clipboard history** using Windows PowerShell
+interop (`powershell.exe` and `wslpath`), rather than running a separate Linux
+clipboard monitor. Enable **Settings → System → Clipboard → Clipboard history**
+on Windows 10 1809 or newer / Windows 11. Text copied in Windows applications
+then appears in the tmux picker. Windows line endings become LF; trailing
+newlines remain intact. This requires the interactive Windows user's clipboard
+session. The Windows provider is covered by fixtures here; it must also be
+verified on an actual WSL desktop.
+
+The plugin is installed at a pinned commit under ignored `plugins/tmux-fzf`.
+Its clipboard entry delegates to the adapter in `scripts/`, so edits take effect
+on the next open without reinstalling a second copy. History is retrieved once
+per open for both popup sizing and selection. TPM is optional. For a machine without sudo, the separate
+`--local-runtime` option extracts the distro's fzf/CopyQ packages under `plugins/`;
+their shared libraries must already be installed. `--no-autostart` skips the
+desktop startup entry. SSH clients receive a message instead of accessing the
+remote server's desktop history.
 
 ## Supported prompts and commands
 
@@ -298,13 +305,148 @@ prompt; `q` cancels it.
 
 ## Shell integration
 
-`eza` and synth-shell are already installed on this host and are initialized by
-`~/.bashrc`. The existing aliases provide `ls`, `l`, `ll`, `la`, and `lt`; tmux
+### Vim editing at the Bash prompt
+
+The optional ble.sh integration starts each command in shell Insert mode.
+Press `Esc` or `Ctrl+O` to enter shell Normal mode and edit the current command
+with Vim motions, operators, text objects, visual selection, and undo. Use `i`, `a`, or
+`A` to resume typing. For example, `ci"` replaces the contents of a quoted
+argument; `w`/`b` move between words and `u` undoes an edit. `Ctrl+C` abandons
+the current command in either shell editing mode.
+In Normal mode, `/pattern` searches forward within the current command and
+`?pattern` searches backward; Enter confirms the search and Escape cancels it.
+Search wraps at either end, with `n` repeating and `N` reversing the search.
+Press Enter in Insert or Normal mode to submit the command, including multiline
+input. Use `Alt+Enter` in Insert mode to add a newline without submitting.
+In shell Visual mode, `i` clears the selection and resumes typing at the cursor
+without replacing the selected text. This overrides Visual mode's usual `i` text-object
+prefix; Normal-mode text objects such as `ci"` remain available.
+
+Tmux stays in `[ INPUT ]` throughout shell editing and passes these keys to Bash.
+Shell Normal mode does not navigate terminal output. `C-s j` enters
+tmux's `[ COMMAND ]` mode to inspect scrollback and copy text; `i` or `q` leaves
+scrollback and returns to the shell's existing editing state.
+
+A muted `[INSERT]`, `[NORMAL]`, or `[VISUAL]` tag appears after the prompt's
+context text and updates immediately as shell modes change. The tag follows
+normal text wrapping when the window is resized. Replace
+and select modes have their own tags. This is independent of tmux's mode label;
+the command-input row stays clear for long commands.
+
+Open a new Bash shell to load these settings, or source
+`~/.config/tmux/shell/completion.bash` in an existing interactive shell.
+
+### Enhanced Bash Tab completion
+
+The optional completion setup uses [ble.sh](https://github.com/akinomyoga/ble.sh)
+for inline suggestions from command history and Bash's programmable completions.
+**Tab accepts the next word of a visible suggestion.** Without a suggestion,
+Tab performs normal completion and opens the completion menu when appropriate.
+For multiple matches, Tab shows the menu, subsequent Tab presses select and cycle
+through its items, and Shift-Tab cycles backward. Enter confirms the selected
+completion without executing the command; press Enter again to run it. Arrow
+keys also navigate the menu, and typing filters it. Ambiguous syntax candidates
+are left for the menu instead of suggesting an arbitrary first match inline.
+The menu follows Neovim's completion styling: at most ten visible rows, normal
+text on the editor background, a bold selection on the CursorLine background,
+green matching text, and muted descriptions and inline suggestions. Inside tmux,
+colours come from its `@beck_default_*` roles at shell startup; outside tmux they
+use the same Monokai defaults. Bash draws its native menu beneath the prompt,
+rather than reproducing Neovim's floating window.
+Right Arrow at the end of the line accepts the whole suggestion; Ctrl-G dismisses
+it, so the next Tab can show other candidates instead. Suggestions are inserted,
+not executed; Enter still runs the command.
+
+Install and enable it independently of eza and synth-shell:
+
+```sh
+./scripts/setup-completion.sh
+```
+
+Or include it in workstation provisioning with `./scripts/setup.sh --completion`.
+The standalone script reuses an installed ble.sh, otherwise downloads the official
+nightly release using curl, tar, and xz. It backs up `.bashrc` before appending a
+guarded loader, preserves `.blerc`, and does not repeat the loader on subsequent
+runs. Use `--no-install` to configure an existing installation without downloads.
+Open a new Bash shell afterward. Bash 4 or newer is required.
+
+This belongs to Bash rather than a global tmux Tab binding: the same completion
+works inside and outside tmux, including repository-aware branch completion.
+`shell/completion.bash` holds the shared settings. Tmux passes Tab through to the
+foreground application. SSH shells need this setup on the remote host as well.
+
+If [carapace-bin](https://carapace-sh.github.io/carapace-bin/setup.html) is on PATH,
+the loader also registers its command-specific completions and descriptions.
+Without it, existing Bash completions (including Git) remain available. Examples:
+
+```text
+git sw<Tab>                     # Complete the subcommand
+git log --on<Tab>               # Complete a git-log option
+git switch origin/v0.<Tab>      # Complete an existing remote branch
+```
+
+These sources describe valid command syntax; they do not scrape every program's
+`-h` output on each keystroke. For a custom CLI without completion, tools such as
+[crazy-complete](https://github.com/crazy-complete/crazy-complete) can generate
+definitions from its help text for review. Prefer the existing Git completer to
+generating one from Git's help.
+
+To disable the optional integration, remove the marked `beck tmux Bash completion`
+block from `.bashrc` and start a new shell.
+
+### Existing shell customizations
+
+This host uses Starship for its Bash prompt, with soft grey context text,
+plain `|` separators, directory/Git icons, and subtle text-colour differences:
+
+```text
+ffxiao@beck-main |  ~/.config/tmux |  master *? [INSERT]
+$
+```
+
+Prompts have no extra blank line above them. Context and command input align with command
+output at the left edge, with input on its own line to leave room for long commands.
+Prompt spacing uses whole terminal rows; half-line margins are not supported.
+
+The `user@host` identity uses a deeper, low-saturation slate blue (`#8f9fa9`).
+The directory, separators, and inline Vim-mode tag use soft grey (`#a6a69c`),
+Git branch/status use muted green (`#9fa98f`), and Python environments use warm
+grey (`#b1a08c`). These are text colours only: every section retains the terminal's
+default background. The mode tag stays attached to the context row when the
+terminal resizes.
+The normal `$` uses a brighter warm grey (`#e6e6de`) to mark the input line.
+Root, read-only paths, Git operations in progress, and failed commands retain pink
+accents. Git indicators include `*` modified, `?` untracked,
+`+` staged, `!` conflicts, `≡` stashes, and `↑N`/`↓N` ahead/behind. The final `$`
+turns pink after a failed command. Detached HEAD shows the commit hash, and active
+Python environments appear as `venv:name`. The GitHub-style icon labels the Git
+section for all repositories. Prompt rendering does not fetch from remotes.
+Icons require a Nerd Font; this host's Konsole profile uses FiraCode Nerd Font.
+
+To reproduce this setup, install [Starship](https://starship.rs/guide/), then run:
+
+```sh
+./scripts/setup-prompt.sh
+exec bash
+```
+
+Setup backs up `.bashrc`, disables only Synth Shell's prompt source command, and
+loads `shell/prompt.bash` before the completion integration. It keeps Synth Shell's
+other tools and existing aliases, and repeated runs do not duplicate the loader.
+Edit `shell/starship.toml` to adjust the prompt. On a separate installation, rerun
+setup to deploy edits. New shells retain Bash's standard prompt if Starship is missing.
+To restore the previous setup, copy the reported `.bashrc.bak.*` backup over `.bashrc`
+and open a new shell. Starship configuration and binaries can stay installed.
+
+`eza` and the remaining synth-shell tools are initialized by `~/.bashrc`.
+The existing aliases provide `ls`, `l`, `ll`, `la`, and `lt`; tmux
 does not redefine them, so the same shell experience is preserved inside and
 outside tmux. If those tools are unavailable on another machine, the shell
 configuration falls back without affecting tmux startup.
 
-Run `./scripts/setup.sh` when provisioning another machine. It skips tools and aliases
+For Starship machines, run `./scripts/setup.sh --skip-synth-shell` to provision
+tmux/eza separately from the prompt. The legacy `./scripts/setup.sh` path
+skips tools and aliases
 that already exist, installs eza through apt/dnf/pacman/Homebrew when possible,
 and downloads synth-shell for its interactive installer when no user install is
 present. It does not overwrite an existing shell or tmux configuration by
@@ -374,7 +516,17 @@ Run the complete non-mutating smoke suite:
 
 ```sh
 ./tests/run.sh
+./tests/run.sh clipboard   # SSH routing and native-provider round trips
+./tests/run.sh theme       # palette isolation and owner lifecycle
+./tests/run.sh completion  # setup idempotence and optional real Tab/menu checks
 ```
+
+`setup`, `prompt`, and `bindings` select the remaining focused groups. The default `all`
+runs each group once. Theme checks compare fallback colours with the configured
+defaults rather than enforcing a fixed palette.
+Completion real-key tests use an installed ble.sh; to test a downloaded copy,
+set `BECK_TEST_BLE_ROOT=/path/to/blesh`. Without ble.sh, the installer fixtures
+still run and the real-key checks report their missing prerequisite.
 
 Check the configuration without attaching to a live session:
 
@@ -386,5 +538,5 @@ TMUX_TMPDIR=/tmp/tmux-test tmux -L beck-check kill-server
 
 Reload an attached server with `C-s R`.
 
-If Neovim was already running when the true-colour setting changed, start a
+If an application was already running when the true-colour setting changed, start a
 fresh pane (or restart the tmux server) so it inherits `COLORTERM=truecolor`.

@@ -99,6 +99,10 @@ for scenario in missing-package update-failure clone-failure pull-failure submod
   [[ "${scenario_exit_status}" == 0 ]] || fail "${scenario}: setup aborted"
 
   [[ -f "${scenario_directory}/home/.config/tmux/tmux.conf" ]] || fail 'configuration missing'
+  for helper_script in theme.sh clipboard.sh clipboard-history.sh; do
+    cmp -s "${TEST_DIRECTORY}/../scripts/${helper_script}" \
+      "${scenario_directory}/home/.config/tmux/scripts/${helper_script}" || fail "runtime helper missing: ${helper_script}"
+  done
   grep -q 'reload shell customizations' "${scenario_directory}/output.log" || fail 'setup did not finish'
   case "${scenario}" in
     missing-package|update-failure|both-fail|skip-eza|alias-failure)

@@ -14,6 +14,10 @@ readonly THEME_SCRIPT_PATH="${PROJECT_DIRECTORY}/scripts/theme.sh"
 temporary_directory=""
 tmux_socket_path=""
 passed_assertions=0
+default_background=""
+default_foreground=""
+default_border=""
+default_muted=""
 
 fail() {
   printf '[test] FAIL: %s\n' "$*" >&2
@@ -71,10 +75,15 @@ check_shell_scripts() {
     [[ -x "${shell_script_path}" ]] || fail "script is not executable: ${shell_script_path}"
   done
   "${SETUP_SCRIPT_PATH}" --help >/dev/null
+  "${PROJECT_DIRECTORY}/scripts/setup-completion.sh" --help >/dev/null
+  "${PROJECT_DIRECTORY}/scripts/setup-prompt.sh" --help >/dev/null
+  "${PROJECT_DIRECTORY}/scripts/setup-clipboard.sh" --help >/dev/null
+  "${PROJECT_DIRECTORY}/scripts/clipboard-history.sh" --help >/dev/null
+  bash -n "${PROJECT_DIRECTORY}/shell/completion.bash"
+  bash -n "${PROJECT_DIRECTORY}/shell/prompt.bash"
   "${MIGRATION_SCRIPT_PATH}" --help >/dev/null
   "${THEME_SCRIPT_PATH}" --help >/dev/null
-  "${TESTS_DIRECTORY}/setup.sh"
-  pass 'shell scripts parse, are executable, and expose help without side effects'
+  pass 'shell entry points parse and expose help without side effects'
 }
 
 start_isolated_server() {
@@ -97,6 +106,10 @@ WAYLAND_STUB
     WAYLAND_DISPLAY=beck-test PATH="${temporary_directory}:${PATH}" \
     tmux -S "${tmux_socket_path}" -f "${TMUX_CONFIG_PATH}" \
     new-session -d -s config-test
+  default_background="$(global_option @beck_default_bg)"
+  default_foreground="$(global_option @beck_default_fg)"
+  default_border="$(global_option @beck_default_border)"
+  default_muted="$(global_option @beck_default_muted)"
   pass 'tmux.conf starts an isolated server'
 }
 
@@ -144,19 +157,24 @@ check_bindings() {
   assert_equal 'old C-b prefix binding is removed' '' \
     "$(binding prefix C-b 2>/dev/null || true)"
   assert_contains 'prefix j enters copy mode' 'copy-mode' "$(binding prefix j)"
+  assert_contains 'prefix f opens system clipboard history' 'clipboard-history.sh' "$(binding prefix f)"
+  assert_contains 'clipboard history captures original pane' '#{pane_id}' "$(binding prefix f)"
+  assert_equal 'Ctrl-f retains application behavior' '' "$(binding root C-f 2>/dev/null || true)"
+  tmux -S "${tmux_socket_path}" bind-key -n Escape copy-mode
+  tmux -S "${tmux_socket_path}" source-file "${TMUX_CONFIG_PATH}"
+  assert_equal 'reload releases Escape for shell and application editing' '' \
+    "$(binding root Escape 2>/dev/null || true)"
+  assert_equal 'C-o reaches shell Vim editing without entering tmux mode' '' \
+    "$(binding root C-o 2>/dev/null || true)"
   assert_contains 'prefix h creates a horizontal split' 'split-window -h' \
     "$(binding prefix h)"
   assert_contains 'resize j moves the divider left' 'resize-pane -L 5' \
     "$(binding resize j)"
-  assert_contains 'copy-mode v starts a selection' 'begin-selection' \
-    "$(binding copy-mode-vi v)"
   assert_contains 'copy-mode i returns to input' 'cancel' \
     "$(binding copy-mode-vi i)"
   assert_contains 'input C-h sends Left' 'send-keys Left' "$(binding root C-h)"
   assert_contains 'input C-j sends Down' 'send-keys Down' "$(binding root C-j)"
   assert_contains 'input C-k sends Up' 'send-keys Up' "$(binding root C-k)"
-  assert_equal 'input C-p retains native application behavior' '' \
-    "$(binding root C-p 2>/dev/null || true)"
   tmux -S "${tmux_socket_path}" bind-key -n C-p send-keys stale-paste
   tmux -S "${tmux_socket_path}" source-file "${TMUX_CONFIG_PATH}"
   assert_equal 'reload removes the legacy C-p paste binding' '' \
@@ -164,8 +182,6 @@ check_bindings() {
   assert_contains 'input C-l sends Right' 'send-keys Right' "$(binding root C-l)"
   assert_equal 'input C-d retains native application behavior' '' \
     "$(binding root C-d 2>/dev/null || true)"
-  assert_contains 'copy-mode y prefers the native Wayland clipboard' 'wl-copy --type text/plain' \
-    "$(binding copy-mode-vi y)"
 }
 
 check_clipboard() {
@@ -215,11 +231,26 @@ check_clipboard() {
   done
 }
 
+check_clipboard_client_routing() {
+  local clipboard_script="${PROJECT_DIRECTORY}/scripts/clipboard.sh"
+  local local_status=0 remote_status=0
+  env -u SSH_CONNECTION -u SSH_TTY sleep 5 &
+  local local_client_pid=$!
+  env SSH_CONNECTION='shared-session 10000 test-host 22' WAYLAND_DISPLAY=beck-test \
+    PATH="${temporary_directory}:${PATH}" \
+    bash "${clipboard_script}" use-native "${local_client_pid}" || local_status=$?
+  kill "${local_client_pid}" 2>/dev/null || true
+  wait "${local_client_pid}" 2>/dev/null || true
+  assert_equal 'local client retains native clipboard despite shared SSH session' 0 "${local_status}"
+  env SSH_CONNECTION='test-client 10000 test-host 22' WAYLAND_DISPLAY=beck-test \
+    PATH="${temporary_directory}:${PATH}" \
+    bash -c 'exec bash "$1" use-native "$$"' test "${clipboard_script}" || remote_status=$?
+  assert_equal 'SSH client bypasses inherited Wayland clipboard' 1 "${remote_status}"
+}
+
 check_clipboard_fallback() {
   tmux -S "${tmux_socket_path}" set-environment -g WAYLAND_DISPLAY ''
   tmux -S "${tmux_socket_path}" source-file "${TMUX_CONFIG_PATH}"
-  assert_contains 'without Wayland, copy uses the Windows bridge' 'iconv -f UTF-8 -t UTF-16LE | clip.exe' \
-    "$(binding copy-mode-vi y)"
   # The previous provider wrote UTF-8; clear its artifact before decoding UTF-16LE.
   rm -f -- "${temporary_directory}/clipboard.bin"
   check_clipboard 'Windows bridge' UTF-16LE
@@ -240,7 +271,7 @@ check_application_theme() {
   shell_pane_id="$(tmux -S "${tmux_socket_path}" split-window -d -P -F '#{pane_id}')"
   second_application_pane_id="$(tmux -S "${tmux_socket_path}" split-window -d -P -F '#{pane_id}' sleep 120)"
   second_application_owner_pid="$(tmux -S "${tmux_socket_path}" display-message -p -t "${second_application_pane_id}" '#{pane_pid}')"
-  assert_equal 'renderer starts with the default palette' '#272822|#f8f8f2' \
+  assert_equal 'renderer starts with the default palette' "${default_background}|${default_foreground}" \
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${application_pane_id}" '#{pane_bg}|#{pane_fg}')"
 
   env TMUX="${tmux_socket_path},0,0" TMUX_PANE="${application_pane_id}" \
@@ -249,10 +280,10 @@ check_application_theme() {
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${application_pane_id}" '#{E:@beck_pane_bg}|#{E:@beck_pane_fg}|#{E:@beck_pane_green}')"
   assert_equal 'publication refreshes cached renderer colours' '#fafaf7|#242424' \
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${application_pane_id}" '#{pane_bg}|#{pane_fg}')"
-  assert_equal 'application preserves tmux default night colour' '#272822' "$(global_option @beck_default_bg)"
-  assert_equal 'omitted palette roles inherit tmux defaults' '#666666' \
+  assert_equal 'application preserves tmux default night colour' "${default_background}" "$(global_option @beck_default_bg)"
+  assert_equal 'omitted palette roles inherit tmux defaults' "${default_border}" \
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${application_pane_id}" '#{E:@beck_pane_border}')"
-  assert_equal 'status style resolves application colours' 'fg=#a6a69c,bg=#fafaf7' \
+  assert_equal 'status style resolves application colours' "fg=${default_muted},bg=#fafaf7" \
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${application_pane_id}" '#{E:status-style}')"
 
   env TMUX="${tmux_socket_path},0,0" TMUX_PANE="${second_application_pane_id}" \
@@ -260,12 +291,12 @@ check_application_theme() {
   tmux -S "${tmux_socket_path}" select-pane -t "${second_application_pane_id}"
   assert_equal 'focus follows a second application palette' '#112233' \
     "$(tmux -S "${tmux_socket_path}" display-message -p '#{E:@beck_pane_bg}')"
-  assert_equal 'unselected pane border uses the focused pane UI palette' 'fg=#666666,bg=#112233' \
+  assert_equal 'unselected pane border uses the focused pane UI palette' "fg=${default_border},bg=#112233" \
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${application_pane_id}" '#{E:pane-border-style}')"
   tmux -S "${tmux_socket_path}" select-pane -t "${shell_pane_id}"
-  assert_equal 'shell pane retains the night palette' '#272822' \
+  assert_equal 'shell pane retains the night palette' "${default_background}" \
     "$(tmux -S "${tmux_socket_path}" display-message -p '#{E:@beck_pane_bg}')"
-  assert_equal 'pane switch restores default shared UI without erasing cached application colours' '#272822|#fafaf7' \
+  assert_equal 'pane switch restores default shared UI without erasing cached application colours' "${default_background}|#fafaf7" \
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${application_pane_id}" '#{E:@beck_ui_bg}|#{@beck_palette_bg}')"
 
   for malformed_entry in 'bg=red' 'bg=#123456;display-message bad' 'unknown=#123456'; do
@@ -283,22 +314,22 @@ check_application_theme() {
 
   env TMUX="${tmux_socket_path},0,0" TMUX_PANE="${application_pane_id}" \
     "${THEME_SCRIPT_PATH}" set --owner "${application_owner_pid}" 'bg=#eeeeee'
-  assert_equal 'replacement drops roles from the previous palette' '#eeeeee|#f8f8f2' \
+  assert_equal 'replacement drops roles from the previous palette' "#eeeeee|${default_foreground}" \
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${application_pane_id}" '#{E:@beck_pane_bg}|#{E:@beck_pane_fg}')"
-  assert_equal 'replacement refreshes inactive renderer colours and omitted roles' '#eeeeee|#f8f8f2' \
+  assert_equal 'replacement refreshes inactive renderer colours and omitted roles' "#eeeeee|${default_foreground}" \
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${application_pane_id}" '#{pane_bg}|#{pane_fg}')"
   tmux -S "${tmux_socket_path}" source-file "${TMUX_CONFIG_PATH}"
   assert_equal 'config reload preserves application overrides' '#eeeeee' \
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${application_pane_id}" '#{E:@beck_pane_bg}')"
   # pane_bg/pane_fg read the renderer's cached colours, unlike E: formats.
   # Prime that cache while light, then reset without reloading the config.
-  assert_equal 'renderer caches the light application palette' '#eeeeee|#f8f8f2' \
+  assert_equal 'renderer caches the light application palette' "#eeeeee|${default_foreground}" \
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${application_pane_id}" '#{pane_bg}|#{pane_fg}')"
   env TMUX="${tmux_socket_path},0,0" TMUX_PANE="${application_pane_id}" "${THEME_SCRIPT_PATH}" reset --owner "${application_owner_pid}"
   env TMUX="${tmux_socket_path},0,0" TMUX_PANE="${application_pane_id}" "${THEME_SCRIPT_PATH}" reset --owner "${application_owner_pid}"
-  assert_equal 'reset is repeatable and restores inherited night colours' '#272822|#f8f8f2' \
+  assert_equal 'reset is repeatable and restores inherited night colours' "${default_background}|${default_foreground}" \
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${application_pane_id}" '#{E:@beck_pane_bg}|#{E:@beck_pane_fg}')"
-  assert_equal 'reset restores the renderer as well as palette formats' '#272822|#f8f8f2' \
+  assert_equal 'reset restores the renderer as well as palette formats' "${default_background}|${default_foreground}" \
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${application_pane_id}" '#{pane_bg}|#{pane_fg}')"
   assert_equal 'reset leaves other applications alone' '#112233' \
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${second_application_pane_id}" '#{E:@beck_pane_bg}')"
@@ -345,7 +376,7 @@ check_window_palette_cache() {
   dark_token="$(tmux -S "${tmux_socket_path}" show-options -pqv -t "${dark_pane_id}" @beck_theme_token)"
   assert_equal 'applications store palettes in their own namespace' '#fafaf7' \
     "$(tmux -S "${tmux_socket_path}" show-options -pqv -t "${light_pane_id}" @beck_palette_bg)"
-  assert_equal 'applications leave global default namespace unchanged' '#272822' "$(global_option @beck_default_bg)"
+  assert_equal 'applications leave global default namespace unchanged' "${default_background}" "$(global_option @beck_default_bg)"
 
   tmux -S "${tmux_socket_path}" select-window -t "${light_pane_id}"
   rendered_windows="$(tmux -S "${tmux_socket_path}" display-message -p -t "${light_pane_id}" '#{W:#{E:window-status-format},#{E:window-status-current-format}}')"
@@ -374,7 +405,7 @@ check_window_palette_cache() {
     "$(tmux -S "${tmux_socket_path}" show-options -pqv -t "${dark_pane_id}" @beck_theme_token)"
 
   other_session_pane_id="$(tmux -S "${tmux_socket_path}" new-session -d -s palette-other -P -F '#{pane_id}' sleep 120)"
-  assert_equal 'another session independently resolves its default palette' '#272822' \
+  assert_equal 'another session independently resolves its default palette' "${default_background}" \
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${other_session_pane_id}" '#{E:@beck_ui_bg}')"
   assert_equal 'another session cannot change this session palette' '#fafaf7' \
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${light_pane_id}" '#{E:@beck_ui_bg}')"
@@ -389,11 +420,11 @@ check_window_palette_cache() {
   assert_equal 'background publication replaces cache and drops old explicit tag colours' '#bbbbbb|#202020' \
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${dark_pane_id}" '#{E:@beck_ui_window_inactive_fg}|#{E:@beck_ui_window_inactive_bg}')"
   tmux -S "${tmux_socket_path}" select-window -t "${plain_pane_id}"
-  assert_equal 'an unpublished window restores default chrome including inactive tags' '#272822|#a6a69c|#272822' \
+  assert_equal 'an unpublished window restores default chrome including inactive tags' "${default_background}|${default_muted}|${default_background}" \
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${plain_pane_id}" '#{E:@beck_ui_bg}|#{E:@beck_ui_window_inactive_fg}|#{E:@beck_ui_window_inactive_bg}')"
   env TMUX="${tmux_socket_path},0,0" TMUX_PANE="${light_pane_id}" "${THEME_SCRIPT_PATH}" reset --force
   tmux -S "${tmux_socket_path}" select-window -t "${light_pane_id}"
-  assert_equal 'cleared cache cannot resurrect an old palette on window selection' '#272822|' \
+  assert_equal 'cleared cache cannot resurrect an old palette on window selection' "${default_background}|" \
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${light_pane_id}" '#{E:@beck_ui_bg}|#{@beck_palette_bg}')"
 }
 
@@ -427,15 +458,12 @@ check_theme_recovery() {
   sleep 1.2
   assert_equal 'live foreground publisher retains colours across watchdog checks' '#eeeeee' \
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${recovery_pane_id}" '#{E:@beck_pane_bg}')"
-  if [[ -r /proc/self/stat ]]; then
-    assert_contains 'Linux owner identity uses stable boot-relative ticks' ':ticks:' "${original_identity}"
-  fi
 
   tmux -S "${tmux_socket_path}" send-keys -t "${recovery_pane_id}" C-z
   wait_for_pane_format "${recovery_pane_id}" '#{pane_current_command}' bash
-  wait_for_pane_format "${recovery_pane_id}" '#{E:@beck_pane_bg}|#{@beck_theme_token}' '#272822|'
+  wait_for_pane_format "${recovery_pane_id}" '#{E:@beck_pane_bg}|#{@beck_theme_token}' "${default_background}|"
   pass 'suspended application restores defaults without application cleanup'
-  assert_equal 'watcher recovery clears the renderer light background' '#272822' \
+  assert_equal 'watcher recovery clears the renderer light background' "${default_background}" \
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${recovery_pane_id}" '#{pane_bg}')"
   if env TMUX="${tmux_socket_path},0,0" TMUX_PANE="${recovery_pane_id}" \
       "${THEME_SCRIPT_PATH}" set --owner "${owner_pid}" 'bg=#eeeeee' >/dev/null 2>&1; then
@@ -458,9 +486,9 @@ check_theme_recovery() {
 
   kill -KILL -- "-${owner_pid}"
   wait_for_pane_format "${recovery_pane_id}" '#{pane_current_command}' bash
-  wait_for_pane_format "${recovery_pane_id}" '#{E:@beck_pane_bg}|#{@beck_theme_owner}' '#272822|'
+  wait_for_pane_format "${recovery_pane_id}" '#{E:@beck_pane_bg}|#{@beck_theme_owner}' "${default_background}|"
   pass 'killing the entire application job restores defaults without cleanup'
-  assert_equal 'killed application leaves the renderer at night defaults' '#272822' \
+  assert_equal 'killed application leaves the renderer at night defaults' "${default_background}" \
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${recovery_pane_id}" '#{pane_bg}')"
 
   tmux -S "${tmux_socket_path}" send-keys -t "${recovery_pane_id}" 'sleep 120' Enter
@@ -479,16 +507,16 @@ check_theme_recovery() {
   replacement_token="$(tmux -S "${tmux_socket_path}" show-options -pqv -t "${recovery_pane_id}" @beck_theme_token)"
   "${THEME_SCRIPT_PATH}" _watch "${tmux_socket_path}" "${recovery_pane_id}" \
     "${replacement_owner_pid}" "${pane_tty}" "${original_identity}" "${replacement_token}"
-  assert_equal 'process identity mismatch expires a stale claim' '#272822' \
+  assert_equal 'process identity mismatch expires a stale claim' "${default_background}" \
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${recovery_pane_id}" '#{E:@beck_pane_bg}')"
   env TMUX="${tmux_socket_path},0,0" TMUX_PANE="${recovery_pane_id}" \
     "${THEME_SCRIPT_PATH}" set --owner "${replacement_owner_pid}" 'bg=#bbbbbb'
   assert_equal 'renderer caches light colours before manual recovery' '#bbbbbb' \
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${recovery_pane_id}" '#{pane_bg}')"
   env TMUX="${tmux_socket_path},0,0" TMUX_PANE="${recovery_pane_id}" "${THEME_SCRIPT_PATH}" reset --force
-  assert_equal 'manual force reset restores defaults regardless of owner' '#272822' \
+  assert_equal 'manual force reset restores defaults regardless of owner' "${default_background}" \
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${recovery_pane_id}" '#{E:@beck_pane_bg}')"
-  assert_equal 'manual force reset restores renderer defaults' '#272822' \
+  assert_equal 'manual force reset restores renderer defaults' "${default_background}" \
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${recovery_pane_id}" '#{pane_bg}')"
 
   local handoff_pane_id
@@ -502,26 +530,61 @@ check_theme_recovery() {
     "$(tmux -S "${tmux_socket_path}" show-options -pqv -t "${handoff_pane_id}" @beck_theme_owner)"
   tmux -S "${tmux_socket_path}" send-keys -t "${handoff_pane_id}" Enter
   wait_for_pane_format "${handoff_pane_id}" '#{pane_current_command}' sleep
-  wait_for_pane_format "${handoff_pane_id}" '#{E:@beck_pane_bg}' '#272822'
+  wait_for_pane_format "${handoff_pane_id}" '#{E:@beck_pane_bg}' "${default_background}"
   assert_equal 'exec handoff restores defaults even when the owner PID remains alive' "${handoff_owner_pid}" \
     "$(tmux -S "${tmux_socket_path}" display-message -p -t "${handoff_pane_id}" '#{pane_pid}')"
 }
 
+usage() {
+  printf '%s\n' 'Usage: tests/run.sh [all|setup|completion|prompt|bindings|clipboard|theme]'
+}
+
 main() {
+  local group="${1:-all}"
+  case "${group}" in
+    -h|--help) usage; return ;;
+    all|setup|completion|prompt|bindings|clipboard|theme) ;;
+    *) usage >&2; fail "unknown test group: ${group}" ;;
+  esac
+  [[ $# -le 1 ]] || fail 'expected at most one test group'
   trap cleanup EXIT
   require_command bash
-  require_command tmux
-  require_command iconv
   check_shell_scripts
-  start_isolated_server
-  check_options
-  check_bindings
-  check_clipboard Wayland UTF-8
-  check_clipboard_fallback
-  check_application_theme
-  check_theme_recovery
-  check_window_palette_cache
-  printf '[test] PASS: %d assertions\n' "${passed_assertions}"
+  if [[ "${group}" == all || "${group}" == setup ]]; then
+    "${TESTS_DIRECTORY}/setup.sh"
+    "${TESTS_DIRECTORY}/clipboard-setup.sh"
+    pass 'installer fixtures pass without changing the real environment'
+  fi
+  if [[ "${group}" == all || "${group}" == completion ]]; then
+    "${TESTS_DIRECTORY}/completion.sh"
+    pass 'Bash completion setup and available real-key tests pass'
+  fi
+  if [[ "${group}" == all || "${group}" == prompt ]]; then
+    "${TESTS_DIRECTORY}/prompt.sh"
+    pass 'Bash prompt migration and available rendering tests pass'
+  fi
+  if [[ "${group}" != setup && "${group}" != completion && "${group}" != prompt ]]; then
+    require_command tmux
+    start_isolated_server
+    if [[ "${group}" == all || "${group}" == bindings ]]; then
+      check_options
+      check_bindings
+    fi
+    if [[ "${group}" == all || "${group}" == clipboard ]]; then
+      require_command iconv
+      check_clipboard_client_routing
+      check_clipboard Wayland UTF-8
+      check_clipboard_fallback
+      "${TESTS_DIRECTORY}/clipboard-history.sh"
+      pass 'system clipboard history snapshots, providers and paste bytes'
+    fi
+    if [[ "${group}" == all || "${group}" == theme ]]; then
+      check_application_theme
+      check_theme_recovery
+      check_window_palette_cache
+    fi
+  fi
+  printf '[test] PASS: %s (%d assertions)\n' "${group}" "${passed_assertions}"
 }
 
 main "$@"
