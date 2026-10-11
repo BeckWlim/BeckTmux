@@ -166,6 +166,32 @@ snapshot
 pass 'real Tab accepts history suggestions one word at a time'
 
 send_key C-c
+send_key -l 'printf his'
+sleep 0.5
+snapshot
+[[ $(cat "${COMPLETION_TEST_DIR}/input-keymap") == auto_complete ]] || fail 'history hint did not appear'
+send_key C-o
+snapshot
+[[ $(cat "${COMPLETION_TEST_DIR}/input-text") == 'printf his' &&
+   $(cat "${COMPLETION_TEST_DIR}/input-keymap") == vi_nmap ]] || \
+  fail 'Ctrl+O did not dismiss the hint and enter Normal mode without changing input'
+pass 'Ctrl+O dismisses an inline hint and enters Normal mode without changing input'
+for newline_key in C-n M-Enter; do
+  send_key C-c
+  send_key -l 'printf his'
+  sleep 0.5
+  snapshot
+  [[ $(cat "${COMPLETION_TEST_DIR}/input-keymap") == auto_complete ]] || fail "history hint did not appear before ${newline_key}"
+  send_key "${newline_key}"
+  snapshot
+  printf 'printf his\n\n' >"${COMPLETION_TEST_DIR}/expected-newline"
+  cmp -s "${COMPLETION_TEST_DIR}/input-text" "${COMPLETION_TEST_DIR}/expected-newline" || \
+    fail "${newline_key} accepted the hint or submitted input instead of inserting a newline"
+  [[ $(cat "${COMPLETION_TEST_DIR}/input-keymap") == vi_imap ]] || fail "${newline_key} left Insert mode"
+  pass "${newline_key} dismisses an inline hint and inserts a newline without submitting"
+done
+
+send_key C-c
 send_key -l 'git log --on'
 sleep 0.5
 send_key Tab
@@ -203,6 +229,7 @@ mode_prompt_count=$(cat "${COMPLETION_TEST_DIR}/prompt-count")
 send_key Escape
 send_key -l 'hci"new value'
 send_key C-o
+wait_for_mode_tag NORMAL
 snapshot
 [[ $(cat "${COMPLETION_TEST_DIR}/input-text") == 'printf "%s" "new value"' ]] || \
   fail 'Vim quoted text object did not replace the current argument'
@@ -320,6 +347,19 @@ snapshot
 pass 'Normal-mode / and ? search the current command with wrapping, n/N repeats, and cancellation'
 send_key C-c
 
+# Ctrl+N splits the command at the Insert-mode cursor, including inside a line.
+send_key -l 'printf split-point'
+send_key C-o
+wait_for_mode_tag NORMAL
+send_key -l '0wi'
+send_key C-n
+snapshot
+[[ $(cat "${COMPLETION_TEST_DIR}/input-text") == $'printf \nsplit-point' &&
+   $(cat "${COMPLETION_TEST_DIR}/input-keymap") == vi_imap ]] || \
+  fail 'Ctrl+N did not split the command at the cursor and stay in Insert mode'
+send_key C-c
+pass 'Insert-mode Ctrl+N inserts a newline at the cursor without submitting'
+
 for submit_mode in normal insert insert-reloaded; do
   if [[ ${submit_mode} == insert-reloaded ]]; then
     send_key -l 'source "$BECK_COMPLETION_TEST_PROJECT/shell/completion.bash"; printf ready > "$BECK_COMPLETION_TEST_DIR/reloaded"'
@@ -330,7 +370,11 @@ for submit_mode in normal insert insert-reloaded; do
   send_key -l 'printf one > "$BECK_COMPLETION_TEST_DIR/submit-'
   send_key -l "${submit_mode}"
   send_key -l '"'
-  send_key M-Enter
+  if [[ ${submit_mode} == insert ]]; then
+    send_key M-Enter
+  else
+    send_key C-n
+  fi
   send_key -l 'printf two >> "$BECK_COMPLETION_TEST_DIR/submit-'
   send_key -l "${submit_mode}"
   send_key -l '"'
@@ -342,14 +386,14 @@ for submit_mode in normal insert insert-reloaded; do
   fi
   snapshot
   [[ $(cat "${COMPLETION_TEST_DIR}/input-text") == *$'\n'* ]] || \
-    fail "Alt+Enter did not insert an explicit newline: $(cat "${COMPLETION_TEST_DIR}/input-text")"
+    fail "newline shortcut did not insert an explicit newline: $(cat "${COMPLETION_TEST_DIR}/input-text")"
   send_key Enter
   wait_for_file "${COMPLETION_TEST_DIR}/submit-${submit_mode}"
   [[ $(cat "${COMPLETION_TEST_DIR}/submit-${submit_mode}") == onetwo ]] || \
     fail "Enter did not submit the multiline command from ${submit_mode} mode"
   wait_for_mode_tag INSERT
 done
-pass 'Enter submits multiline commands after cursor movement and reloading; Alt+Enter inserts a newline'
+pass 'Enter submits multiline commands after cursor movement and reloading; Ctrl+N and Alt+Enter insert newlines'
 
 # Start with a clean screen to distinguish resize artifacts from old commands.
 rm -f -- "${COMPLETION_TEST_DIR}/ready"

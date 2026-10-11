@@ -308,7 +308,7 @@ prompt; `q` cancels it.
 ### Vim editing at the Bash prompt
 
 The optional ble.sh integration starts each command in shell Insert mode.
-Press `Esc` or `Ctrl+O` to enter shell Normal mode and edit the current command
+Press `Ctrl+O` or `Esc` to enter shell Normal mode and edit the current command
 with Vim motions, operators, text objects, visual selection, and undo. Use `i`, `a`, or
 `A` to resume typing. For example, `ci"` replaces the contents of a quoted
 argument; `w`/`b` move between words and `u` undoes an edit. `Ctrl+C` abandons
@@ -317,7 +317,10 @@ In Normal mode, `/pattern` searches forward within the current command and
 `?pattern` searches backward; Enter confirms the search and Escape cancels it.
 Search wraps at either end, with `n` repeating and `N` reversing the search.
 Press Enter in Insert or Normal mode to submit the command, including multiline
-input. Use `Alt+Enter` in Insert mode to add a newline without submitting.
+input. Use `Ctrl+N` or `Alt+Enter` in Insert mode to add a newline at the cursor
+without submitting. Ctrl+N replaces next-line/history navigation; Down Arrow
+(or `Ctrl+J` inside tmux) still provides that motion.
+Ctrl+O, Ctrl+N, and Alt+Enter dismiss any visible inline suggestion before their action.
 In shell Visual mode, `i` clears the selection and resumes typing at the cursor
 without replacing the selected text. This overrides Visual mode's usual `i` text-object
 prefix; Normal-mode text objects such as `ci"` remain available.

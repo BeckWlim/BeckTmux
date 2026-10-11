@@ -111,8 +111,10 @@ function ble/widget/beck/search-repeat {
 }
 function beck/input-keymap {
   ble-bind -m vi_imap -f C-o vi_imap/normal-mode
+  # Down Arrow (and tmux's Ctrl+J) keeps line/history navigation available.
+  ble-bind -m vi_imap -f C-n newline
   # Submit multiline input too, including after returning from Normal mode.
-  # Alt+Enter retains ble.sh's explicit newline insertion in Insert mode.
+  # Alt+Enter inserts an explicit newline in Insert mode.
   local enter_key
   for enter_key in C-m RET; do
     ble-bind -m vi_imap -f "${enter_key}" accept-line
@@ -212,6 +214,9 @@ function beck/complete-load {
   # Support both encodings because terminals normally send C-i for Tab.
   ble-bind -m auto_complete -f C-i 'auto_complete/@end insert-word'
   ble-bind -m auto_complete -f TAB 'auto_complete/@end insert-word'
+  # Dismiss a visible hint before Ctrl+O enters shell Normal mode.
+  ble-bind -m auto_complete -f C-o auto_complete/cancel-default
+  ble-bind -m auto_complete -f C-n auto_complete/cancel-default
   beck/completion-theme
 }
 blehook/eval-after-load complete beck/complete-load
