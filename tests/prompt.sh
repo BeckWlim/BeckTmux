@@ -1,22 +1,19 @@
 #!/usr/bin/env bash
 
-# Fixture-only migration tests, plus real Starship rendering when available.
+# Fixture-only setup tests, plus real Starship rendering when available.
 set -Eeuo pipefail
 PROMPT_TEST_PROJECT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 PROMPT_TEST_DIR=$(mktemp -d /tmp/beck-prompt-tests.XXXXXXXX)
 trap 'rm -rf -- "${PROMPT_TEST_DIR}"' EXIT
 
 (
-  source "${PROMPT_TEST_PROJECT}/scripts/setup-prompt.sh"
+  source "${PROMPT_TEST_PROJECT}/scripts/setup.sh"
   PROMPT_CONFIG_DIR="${PROMPT_TEST_DIR}/config/tmux/shell"
   PROMPT_BASHRC="${PROMPT_TEST_DIR}/bashrc"
   cat >"${PROMPT_BASHRC}" <<'EOF'
 alias keep_me=true
 PROMPT_COMMAND='keep_hook'
-if [[ -r "$HOME/.config/synth-shell/synth-shell-prompt.sh" ]]; then
-  source "$HOME/.config/synth-shell/synth-shell-prompt.sh"
-fi
-source "$HOME/.config/synth-shell/alias.sh"
+source "$HOME/.config/custom/aliases.bash"
 # >>> beck tmux Bash completion >>>
 source "$HOME/.config/tmux/shell/completion.bash"
 EOF
@@ -35,14 +32,13 @@ text = rc.read_text()
 assert text.index('# >>> beck tmux Bash prompt >>>') < text.index('# >>> beck tmux Bash completion >>>')
 assert 'alias keep_me=true' in text
 assert "PROMPT_COMMAND='keep_hook'" in text
-assert '\nsource "$HOME/.config/synth-shell/alias.sh"\n' in text
-assert '\n  source "$HOME/.config/synth-shell/synth-shell-prompt.sh"' not in text
+assert '\nsource "$HOME/.config/custom/aliases.bash"\n' in text
 backups = list(rc.parent.glob(rc.name + '.bak.*'))
 assert len(backups) == 1
 assert backups[0].read_bytes() == pathlib.Path(sys.argv[2]).read_bytes()
 PY
   cmp "${PROMPT_CONFIG_DIR}/starship.toml" "${PROMPT_TEST_PROJECT}/shell/starship.toml"
-  printf '[prompt-test] ok: migration preserves aliases/hooks/completion, backs up once, and is idempotent\n'
+  printf '[prompt-test] ok: setup preserves aliases/hooks/completion, backs up once, and is idempotent\n'
 )
 
 bash -c 'PS1=unchanged; source "$1"; [[ $PS1 == unchanged ]]' test \

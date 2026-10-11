@@ -9,19 +9,14 @@ terminal-default primary text.
 ## Files
 
 - `tmux.conf` — self-contained tmux configuration; no oh-my-tmux or TPM required.
-- `scripts/setup.sh` — idempotently installs/checks tmux, eza, and synth-shell, then adds
-  guarded eza aliases when they are missing.
-- `scripts/setup-completion.sh` — optional ble.sh installation and Bash Tab setup.
+- `scripts/setup.sh` — the single setup entry point for the tmux configuration,
+  eza aliases, Starship prompt, ble.sh completion, and clipboard history.
 - `shell/completion.bash` — Vim input editing, mode tag, history suggestions, and completion menus.
-- `scripts/setup-prompt.sh` — backs up Bash configuration and switches its prompt to Starship.
 - `shell/prompt.bash`, `shell/starship.toml` — prompt initialization and subtle context text colours.
 - `scripts/migrate-tmux.sh` — safely builds, validates, installs, and switches to a
   requested tmux release while preserving the currently installed binary.
 - `scripts/theme.sh` — opt-in application hook to set or reset a pane's palette.
-- `scripts/clipboard.sh` — shared clipboard policy for local and SSH clients.
-- `scripts/setup-clipboard.sh` — optional tmux-fzf installation and clipboard history setup.
-- `scripts/clipboard-history.sh` — system history picker and lossless paste adapter.
-- `scripts/windows-clipboard-history.ps1` — Windows clipboard history provider for WSL.
+- `scripts/clipboard.sh` — local/SSH clipboard routing, Linux history picker, and lossless paste.
 - `tests/run.sh` — smoke-tests shell entry points and the effective configuration on
   an isolated tmux server.
 - `README.md` — this usage and integration guide.
@@ -208,17 +203,15 @@ release. `y`/`C-c` copy and clear the selection while preserving command mode an
 the cursor position. `Enter` does the same when a selection exists and otherwise
 keeps command mode active. `i`, `q`, or `C-q` returns to input mode.
 
-On tmux 3.6 or newer, local clients prefer `wl-copy --type text/plain` when
-Wayland is available. In WSLg,
-this also updates the Windows clipboard and preserves Unicode text directly.
-Without Wayland, WSL's `clip.exe` bridge remains a fallback when `iconv` is
-available; selections are converted from UTF-8 to UTF-16LE for Windows.
+On tmux 3.6 or newer, local clients use `wl-copy --type text/plain` when
+Wayland is available, preserving Unicode text directly.
 `scripts/clipboard.sh` chooses the route at keypress time for the calling client.
-On Linux/WSL it reads that client's SSH environment, so an SSH client uses OSC 52
+It reads that client's SSH environment, so an SSH client uses OSC 52
 even when sharing a session started on the local desktop. Local clients keep
 the native provider, which runs asynchronously and suppresses OSC 52 for that
 operation. Tmux owns the paste buffer and OSC 52 delivery. With no native
-provider, copying uses OSC 52 as well. Paste local clipboard text with your
+provider, copying uses OSC 52 as well. This includes SSH from PowerShell into WSL;
+the client terminal must support OSC 52 clipboard writes. Paste local clipboard text with your
 terminal's Paste action, or use `C-s ]` for the latest tmux buffer.
 
 ### System clipboard history
@@ -247,15 +240,15 @@ Install through the existing setup entry point:
 ./scripts/setup.sh --clipboard
 ```
 
-To install only this integration, use `./scripts/setup-clipboard.sh --install-deps`.
-Both reuse existing tools. Pop!_OS, Ubuntu and Debian use their configured apt
-repositories for `git`, `fzf` and (on Linux desktops) `copyq`; setup does not add
+Clipboard history is optional and intended for a local Linux desktop. Setup reuses existing tools.
+Pop!_OS, Ubuntu and Debian use their configured apt repositories for `git`, `fzf`
+and `copyq`; setup does not add
 a repository, pin a distro release, or upgrade the OS. Missing optional packages
 are reported without preventing the rest of `setup.sh` from completing.
 
 On Linux, CopyQ records desktop clipboard changes. Setup adds a desktop autostart
 entry if absent; start it for the current login with
-`./scripts/clipboard-history.sh start`, then reload using `C-s R`.
+`./scripts/clipboard.sh start`, then reload using `C-s R`.
 CopyQ must be running when text is copied; past copies from before recording
 started cannot be recovered. On GNOME/Pop!_OS 22.04, the distro's older CopyQ
 works with the X11 session. Wayland capture depends on desktop protocols; older
@@ -263,20 +256,15 @@ CopyQ may require its XWayland workaround, while newer versions support addition
 compositors. See [CopyQ's Wayland notes](https://copyq.readthedocs.io/en/latest/known-issues.html).
 Pop!_OS 24.04/COSMIC monitoring needs verification on that desktop.
 
-In WSL, the provider reads **Windows clipboard history** using Windows PowerShell
-interop (`powershell.exe` and `wslpath`), rather than running a separate Linux
-clipboard monitor. Enable **Settings → System → Clipboard → Clipboard history**
-on Windows 10 1809 or newer / Windows 11. Text copied in Windows applications
-then appears in the tmux picker. Windows line endings become LF; trailing
-newlines remain intact. This requires the interactive Windows user's clipboard
-session. The Windows provider is covered by fixtures here; it must also be
-verified on an actual WSL desktop.
+Over SSH, including SSH into WSL, setup skips desktop clipboard history installation.
+Core copying uses OSC 52 without a Windows helper. The picker accesses only local
+Linux desktop history; use the client terminal's Paste action for its clipboard.
 
 The plugin is installed at a pinned commit under ignored `plugins/tmux-fzf`.
 Its clipboard entry delegates to the adapter in `scripts/`, so edits take effect
 on the next open without reinstalling a second copy. History is retrieved once
 per open for both popup sizing and selection. TPM is optional. For a machine without sudo, the separate
-`--local-runtime` option extracts the distro's fzf/CopyQ packages under `plugins/`;
+`--clipboard-local-runtime` option extracts the distro's fzf/CopyQ packages under `plugins/`;
 their shared libraries must already be installed. `--no-autostart` skips the
 desktop startup entry. SSH clients receive a message instead of accessing the
 remote server's desktop history.
@@ -360,18 +348,17 @@ Right Arrow at the end of the line accepts the whole suggestion; Ctrl-G dismisse
 it, so the next Tab can show other candidates instead. Suggestions are inserted,
 not executed; Enter still runs the command.
 
-Install and enable it independently of eza and synth-shell:
+Install and enable it independently of eza:
 
 ```sh
-./scripts/setup-completion.sh
+./scripts/setup.sh --completion
 ```
 
-Or include it in workstation provisioning with `./scripts/setup.sh --completion`.
-The standalone script reuses an installed ble.sh, otherwise downloads the official
+Setup reuses an installed ble.sh, otherwise downloads the official
 nightly release using curl, tar, and xz. It backs up `.bashrc` before appending a
 guarded loader, preserves `.blerc`, and does not repeat the loader on subsequent
-runs. Use `--no-install` to configure an existing installation without downloads.
-Open a new Bash shell afterward. Bash 4 or newer is required.
+runs. Use `--completion-no-install` to configure an existing ble.sh installation
+without downloads. Open a new Bash shell afterward. Bash 4 or newer is required.
 
 This belongs to Bash rather than a global tmux Tab binding: the same completion
 works inside and outside tmux, including repository-aware branch completion.
@@ -426,59 +413,90 @@ Python environments appear as `venv:name`. The GitHub-style icon labels the Git
 section for all repositories. Prompt rendering does not fetch from remotes.
 Icons require a Nerd Font; this host's Konsole profile uses FiraCode Nerd Font.
 
-To reproduce this setup, install [Starship](https://starship.rs/guide/), then run:
+To install and configure the prompt, run:
 
 ```sh
-./scripts/setup-prompt.sh
+./scripts/setup.sh --prompt
 exec bash
 ```
 
-Setup backs up `.bashrc`, disables only Synth Shell's prompt source command, and
-loads `shell/prompt.bash` before the completion integration. It keeps Synth Shell's
-other tools and existing aliases, and repeated runs do not duplicate the loader.
+Setup reuses Starship on PATH, or an existing `~/.local/bin/starship`. If missing,
+it downloads the [official Starship installer](https://starship.rs/guide/) and
+installs the binary in `~/.local/bin` without sudo. This requires curl, sh, tar,
+and Python 3 for prompt configuration. The shell loader also finds the user-local
+binary when `~/.local/bin` is absent from PATH.
+Setup backs up `.bashrc` and loads `shell/prompt.bash` before the completion
+integration. Existing aliases and hooks are preserved, and repeated runs do not
+duplicate the loader.
 Edit `shell/starship.toml` to adjust the prompt. On a separate installation, rerun
 setup to deploy edits. New shells retain Bash's standard prompt if Starship is missing.
 To restore the previous setup, copy the reported `.bashrc.bak.*` backup over `.bashrc`
 and open a new shell. Starship configuration and binaries can stay installed.
 
-`eza` and the remaining synth-shell tools are initialized by `~/.bashrc`.
-The existing aliases provide `ls`, `l`, `ll`, `la`, and `lt`; tmux
+`eza` aliases are initialized by `~/.bashrc`.
+The aliases provide `ls`, `l`, `ll`, `la`, and `lt`; tmux
 does not redefine them, so the same shell experience is preserved inside and
 outside tmux. If those tools are unavailable on another machine, the shell
 configuration falls back without affecting tmux startup.
 
-For Starship machines, run `./scripts/setup.sh --skip-synth-shell` to provision
-tmux/eza separately from the prompt. The legacy `./scripts/setup.sh` path
-skips tools and aliases
-that already exist, installs eza through apt/dnf/pacman/Homebrew when possible,
-and downloads synth-shell for its interactive installer when no user install is
-present. It does not overwrite an existing shell or tmux configuration by
-default. Optional steps run independently: a package, download, or installer
+Run `./scripts/setup.sh` to install only the core BeckTmux configuration and
+runtime helpers. It checks for tmux but does not install or upgrade its binary.
+Without feature flags, setup does not install optional packages, change shell
+configuration, or install plugins.
+
+Each optional integration has its own flag:
+
+| Flag | Installation and configuration |
+| --- | --- |
+| `--eza` | eza and guarded directory-listing aliases |
+| `--prompt` | Starship and the Beck Bash prompt |
+| `--completion` | ble.sh suggestions, Vim editing, and completion menus |
+| `--clipboard` | Clipboard history, tmux-fzf, fzf, and Linux CopyQ |
+
+With `--eza`, setup reuses existing eza installs and aliases, or installs eza
+through apt/dnf/pacman/Homebrew when possible. It does not overwrite an
+existing shell or tmux configuration by default. Optional steps run
+independently: a package, download, or installer
 failure emits a warning and allows the other steps to continue. Setup returns
 success after optional failures and summarizes them at the end; configuration
 installation errors still stop setup. Eza aliases are added only if eza is
-available. To install synth-shell without attempting eza:
+available. To enable every managed optional integration:
 
 ```sh
-./scripts/setup.sh --skip-eza
-source ~/.bashrc
+./scripts/setup.sh --eza --prompt --completion --clipboard
+exec bash
 ```
 
-Setup also repairs existing Synth Shell installs with the known separator bug
-that displays `usernameE0B0` instead of a triangle. It backs up the prompt script
-as `synth-shell-prompt.sh.bak.XXXXXXXX` and decodes only the separator, preserving
-`separator_char='\uE0B0'` and treating prompt text literally. The repair matches
-the affected renderer only; repeated runs leave the repaired script unchanged.
-
-Use `--skip-synth-shell` to skip both installation and repair. Its installer runs
-interactively; without a terminal, setup downloads it and prints the installer
-path for later activation. To intentionally replace a destination tmux config, use:
+Omit a feature flag to leave that integration alone. To intentionally replace a
+destination tmux config, use:
 
 ```sh
 ./scripts/setup.sh --overwrite
 ```
 
 The previous tmux config is saved as `tmux.conf.bak.YYYYMMDD-HHMMSS` first.
+
+### Updating an existing installation
+
+Update the whole checkout at `~/.config/tmux`, including its scripts and shell
+files, then rerun the integrations you use:
+
+```sh
+cd ~/.config/tmux
+./scripts/setup.sh --eza --prompt --completion --clipboard
+tmux source-file ~/.config/tmux/tmux.conf
+```
+
+Open a new Bash shell afterward. The explicit reload works regardless of the
+previous prefix binding. When installing from a separate checkout, add
+`--overwrite` to replace the destination config with a timestamped backup.
+Prompt setup also backs up changed prompt files and `.bashrc`.
+
+When migrating from another shell prompt or tool suite, back up `.bashrc` and
+remove its old initialization blocks before enabling the current integrations.
+Setup preserves unrelated shell configuration rather than removing other tools.
+Updating these files does not upgrade the tmux binary or switch a running server;
+use the version migration workflow below when needed.
 
 ## Tmux version migration
 

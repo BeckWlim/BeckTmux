@@ -1,4 +1,4 @@
-# Sourced at the end of ~/.bashrc by scripts/setup-completion.sh.
+# Sourced at the end of ~/.bashrc by scripts/setup.sh --completion.
 # Bash owns input editing and completion; tmux keeps its own key tables.
 [[ $- == *i* ]] || return 0
 ((BASH_VERSINFO[0] >= 4)) || return 0

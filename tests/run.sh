@@ -54,7 +54,7 @@ cleanup() {
     tmux -S "${tmux_socket_path}" kill-server >/dev/null 2>&1 || true
   fi
   if [[ -n "${temporary_directory}" && -d "${temporary_directory}" ]]; then
-    rm -f -- "${temporary_directory}/clip.exe" "${temporary_directory}/wl-copy" "${temporary_directory}/server.sock" \
+    rm -f -- "${temporary_directory}/wl-copy" "${temporary_directory}/server.sock" \
       "${temporary_directory}/clipboard.bin" "${temporary_directory}/clipboard.bin.pending"
     rmdir -- "${temporary_directory}" 2>/dev/null || true
   fi
@@ -75,10 +75,7 @@ check_shell_scripts() {
     [[ -x "${shell_script_path}" ]] || fail "script is not executable: ${shell_script_path}"
   done
   "${SETUP_SCRIPT_PATH}" --help >/dev/null
-  "${PROJECT_DIRECTORY}/scripts/setup-completion.sh" --help >/dev/null
-  "${PROJECT_DIRECTORY}/scripts/setup-prompt.sh" --help >/dev/null
-  "${PROJECT_DIRECTORY}/scripts/setup-clipboard.sh" --help >/dev/null
-  "${PROJECT_DIRECTORY}/scripts/clipboard-history.sh" --help >/dev/null
+  "${PROJECT_DIRECTORY}/scripts/clipboard.sh" --help >/dev/null
   bash -n "${PROJECT_DIRECTORY}/shell/completion.bash"
   bash -n "${PROJECT_DIRECTORY}/shell/prompt.bash"
   "${MIGRATION_SCRIPT_PATH}" --help >/dev/null
@@ -89,12 +86,6 @@ check_shell_scripts() {
 start_isolated_server() {
   temporary_directory="$(mktemp -d /tmp/beck-tmux-tests.XXXXXXXX)"
   tmux_socket_path="${temporary_directory}/server.sock"
-  cat >"${temporary_directory}/clip.exe" <<'CLIPBOARD_STUB'
-#!/bin/sh
-cat >"${BECK_TMUX_TEST_CLIPBOARD_PATH}.pending"
-mv "${BECK_TMUX_TEST_CLIPBOARD_PATH}.pending" "${BECK_TMUX_TEST_CLIPBOARD_PATH}"
-CLIPBOARD_STUB
-  chmod +x "${temporary_directory}/clip.exe"
   cat >"${temporary_directory}/wl-copy" <<'WAYLAND_STUB'
 #!/bin/sh
 [ "$#" -eq 2 ] && [ "$1" = --type ] && [ "$2" = text/plain ] || exit 2
@@ -102,7 +93,7 @@ cat >"${BECK_TMUX_TEST_CLIPBOARD_PATH}.pending"
 mv "${BECK_TMUX_TEST_CLIPBOARD_PATH}.pending" "${BECK_TMUX_TEST_CLIPBOARD_PATH}"
 WAYLAND_STUB
   chmod +x "${temporary_directory}/wl-copy"
-  env -u TMUX BECK_TMUX_TEST_CLIPBOARD_PATH="${temporary_directory}/clipboard.bin" \
+  env -u TMUX -u SSH_CONNECTION -u SSH_TTY BECK_TMUX_TEST_CLIPBOARD_PATH="${temporary_directory}/clipboard.bin" \
     WAYLAND_DISPLAY=beck-test PATH="${temporary_directory}:${PATH}" \
     tmux -S "${tmux_socket_path}" -f "${TMUX_CONFIG_PATH}" \
     new-session -d -s config-test
@@ -157,7 +148,7 @@ check_bindings() {
   assert_equal 'old C-b prefix binding is removed' '' \
     "$(binding prefix C-b 2>/dev/null || true)"
   assert_contains 'prefix j enters copy mode' 'copy-mode' "$(binding prefix j)"
-  assert_contains 'prefix f opens system clipboard history' 'clipboard-history.sh' "$(binding prefix f)"
+  assert_contains 'prefix f opens system clipboard history' 'clipboard.sh' "$(binding prefix f)"
   assert_contains 'clipboard history captures original pane' '#{pane_id}' "$(binding prefix f)"
   assert_equal 'Ctrl-f retains application behavior' '' "$(binding root C-f 2>/dev/null || true)"
   tmux -S "${tmux_socket_path}" bind-key -n Escape copy-mode
@@ -186,7 +177,6 @@ check_bindings() {
 
 check_clipboard() {
   local provider_name="$1"
-  local clipboard_encoding="$2"
   local clipboard_pane_id
   local copy_key
   local sample_text
@@ -214,14 +204,19 @@ check_clipboard() {
     tmux -S "${tmux_socket_path}" send-keys -t "${clipboard_pane_id}" "${copy_key}"
     copied_text=""
     for attempt in {1..100}; do
-      if [[ -f "${temporary_directory}/clipboard.bin" ]]; then
-        copied_text="$(iconv -f "${clipboard_encoding}" -t UTF-8 "${temporary_directory}/clipboard.bin")"
+      if [[ "${provider_name}" == Wayland && -f "${temporary_directory}/clipboard.bin" ]]; then
+        copied_text="$(cat "${temporary_directory}/clipboard.bin")"
+        [[ "${copied_text}" == "${sample_text}" ]] && break
+      elif [[ "${provider_name}" != Wayland ]]; then
+        copied_text="$(tmux -S "${tmux_socket_path}" save-buffer - 2>/dev/null || true)"
         [[ "${copied_text}" == "${sample_text}" ]] && break
       fi
       sleep 0.05
     done
-    assert_equal "${copy_key}: ${provider_name} receives lossless Unicode" "${sample_text}" "${copied_text}"
-    assert_equal "${copy_key}: tmux paste buffer retains UTF-8" "${sample_text}" \
+    if [[ "${provider_name}" == Wayland ]]; then
+      assert_equal "${copy_key}: Wayland receives lossless Unicode" "${sample_text}" "${copied_text}"
+    fi
+    assert_equal "${copy_key}: ${provider_name} retains UTF-8 in tmux paste buffer" "${sample_text}" \
       "$(tmux -S "${tmux_socket_path}" save-buffer -)"
     assert_equal "${copy_key}: copy clears selection and keeps command mode" 'copy-mode:0' \
       "$(tmux -S "${tmux_socket_path}" display-message -p -t "${clipboard_pane_id}" '#{pane_mode}:#{selection_present}')"
@@ -233,7 +228,7 @@ check_clipboard() {
 
 check_clipboard_client_routing() {
   local clipboard_script="${PROJECT_DIRECTORY}/scripts/clipboard.sh"
-  local local_status=0 remote_status=0
+  local local_status=0 remote_status=0 fallback_status=0
   env -u SSH_CONNECTION -u SSH_TTY sleep 5 &
   local local_client_pid=$!
   env SSH_CONNECTION='shared-session 10000 test-host 22' WAYLAND_DISPLAY=beck-test \
@@ -242,18 +237,23 @@ check_clipboard_client_routing() {
   kill "${local_client_pid}" 2>/dev/null || true
   wait "${local_client_pid}" 2>/dev/null || true
   assert_equal 'local client retains native clipboard despite shared SSH session' 0 "${local_status}"
-  env SSH_CONNECTION='test-client 10000 test-host 22' WAYLAND_DISPLAY=beck-test \
+  env SSH_CONNECTION='test-client 10000 test-host 22' WSL_DISTRO_NAME=fixture WAYLAND_DISPLAY=beck-test \
     PATH="${temporary_directory}:${PATH}" \
     bash -c 'exec bash "$1" use-native "$$"' test "${clipboard_script}" || remote_status=$?
-  assert_equal 'SSH client bypasses inherited Wayland clipboard' 1 "${remote_status}"
+  assert_equal 'SSH into WSL bypasses inherited Wayland clipboard' 1 "${remote_status}"
+  env -u SSH_CONNECTION -u SSH_TTY -u WAYLAND_DISPLAY \
+    bash "${clipboard_script}" use-native || fallback_status=$?
+  assert_equal 'client without Wayland falls back to tmux OSC 52' 1 "${fallback_status}"
 }
 
 check_clipboard_fallback() {
   tmux -S "${tmux_socket_path}" set-environment -g WAYLAND_DISPLAY ''
   tmux -S "${tmux_socket_path}" source-file "${TMUX_CONFIG_PATH}"
-  # The previous provider wrote UTF-8; clear its artifact before decoding UTF-16LE.
+  # With no native provider, copy keys must still update tmux's UTF-8 buffer.
   rm -f -- "${temporary_directory}/clipboard.bin"
-  check_clipboard 'Windows bridge' UTF-16LE
+  check_clipboard 'OSC 52 fallback'
+  [[ ! -e "${temporary_directory}/clipboard.bin" ]] || fail 'fallback wrote to the desktop clipboard'
+  pass 'OSC 52 fallback leaves the desktop clipboard untouched'
 }
 
 check_application_theme() {
@@ -561,7 +561,7 @@ main() {
   fi
   if [[ "${group}" == all || "${group}" == prompt ]]; then
     "${TESTS_DIRECTORY}/prompt.sh"
-    pass 'Bash prompt migration and available rendering tests pass'
+    pass 'Bash prompt setup and available rendering tests pass'
   fi
   if [[ "${group}" != setup && "${group}" != completion && "${group}" != prompt ]]; then
     require_command tmux
@@ -571,12 +571,11 @@ main() {
       check_bindings
     fi
     if [[ "${group}" == all || "${group}" == clipboard ]]; then
-      require_command iconv
       check_clipboard_client_routing
-      check_clipboard Wayland UTF-8
+      check_clipboard Wayland
       check_clipboard_fallback
       "${TESTS_DIRECTORY}/clipboard-history.sh"
-      pass 'system clipboard history snapshots, providers and paste bytes'
+      pass 'local clipboard history snapshots and paste bytes'
     fi
     if [[ "${group}" == all || "${group}" == theme ]]; then
       check_application_theme

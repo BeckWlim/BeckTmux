@@ -54,15 +54,6 @@ if [[ "$1" == display-popup || "$1" == display-message ]]; then
 fi
 exec "${BECK_HISTORY_TMUX}" -S "${BECK_HISTORY_FIXTURE}/server.sock" "$@"
 EOF
-cat >"${FIXTURE_DIRECTORY}/bin/powershell.exe" <<'EOF'
-#!/usr/bin/env bash
-printf '%s\n' "$@" >"${BECK_HISTORY_FIXTURE}/powershell-arguments"
-cat "${BECK_HISTORY_FIXTURE}/snapshot"
-EOF
-cat >"${FIXTURE_DIRECTORY}/bin/wslpath" <<'EOF'
-#!/usr/bin/env bash
-printf '%s\n' "$2"
-EOF
 chmod +x "${FIXTURE_DIRECTORY}/bin/"*
 export PATH="${FIXTURE_DIRECTORY}/bin:${PATH}"
 unset WSL_DISTRO_NAME SSH_CONNECTION SSH_TTY
@@ -84,48 +75,41 @@ sample_bytes="$(wc -c <"${FIXTURE_DIRECTORY}/sample")"
 printf '\033[200~' >"${FIXTURE_DIRECTORY}/expected"
 cat "${FIXTURE_DIRECTORY}/sample" >>"${FIXTURE_DIRECTORY}/expected"
 printf '\033[201~' >>"${FIXTURE_DIRECTORY}/expected"
-for provider in linux wsl; do
-  output_path="${FIXTURE_DIRECTORY}/${provider}-paste"
-  pane_id="$(tmux new-window -d -P -F '#{pane_id}' bash -c '
-    stty raw -echo
-    printf "\033[?2004h"
-    touch "$3"
-    dd bs=1 count="$1" of="$2" 2>/dev/null
-    exec sleep 120
-  ' test "$((sample_bytes + 12))" "${output_path}" "${FIXTURE_DIRECTORY}/${provider}-ready")"
-  for attempt in {1..100}; do
-    [[ -f "${FIXTURE_DIRECTORY}/${provider}-ready" ]] && break
-    sleep 0.02
-  done
-  [[ -f "${FIXTURE_DIRECTORY}/${provider}-ready" ]] || fail 'paste receiver did not start'
-  make_snapshot
-  if [[ "${provider}" == wsl ]]; then
-    export WSL_DISTRO_NAME=fixture
-  fi
-  "${PROJECT_DIRECTORY}/scripts/clipboard-history.sh" pick "${pane_id}"
-  grep -qx -- '--preview-window=right,55%,border-left,wrap' "${FIXTURE_DIRECTORY}/fzf-arguments" || fail 'preview is not on the right'
-  grep -qx -- '--disabled' "${FIXTURE_DIRECTORY}/fzf-arguments" || fail 'picker starts in search mode'
-  grep -qx -- '--bind=j:down,k:up,o:accept,q:abort,change:clear-query' "${FIXTURE_DIRECTORY}/fzf-arguments" || fail 'selection keys differ'
-  grep -q -- 'fg:-1,bg:#102030,fg+:-1,bg+:#304050' "${FIXTURE_DIRECTORY}/fzf-arguments" || fail 'picker ignores palette roles'
-  grep -q -- 'hl:#90a0b0' "${FIXTURE_DIRECTORY}/fzf-arguments" || fail 'matching does not use focus colour'
-  for attempt in {1..100}; do
-    cmp -s "${output_path}" "${FIXTURE_DIRECTORY}/expected" && break
-    sleep 0.02
-  done
-  if ! cmp -s "${output_path}" "${FIXTURE_DIRECTORY}/expected"; then
-    od -An -tx1 "${output_path}" "${FIXTURE_DIRECTORY}/expected" >&2
-    fail "${provider}: paste bytes differ"
-  fi
-  [[ -z "$(tmux list-buffers)" ]] || fail 'temporary paste buffer leaked'
-  pass "${provider}: snapshot pastes Unicode and trailing newlines with bracketed paste into original pane"
-  unset WSL_DISTRO_NAME
-  tmux kill-pane -t "${pane_id}"
+output_path="${FIXTURE_DIRECTORY}/linux-paste"
+pane_id="$(tmux new-window -d -P -F '#{pane_id}' bash -c '
+  stty raw -echo
+  printf "\033[?2004h"
+  touch "$3"
+  dd bs=1 count="$1" of="$2" 2>/dev/null
+  exec sleep 120
+' test "$((sample_bytes + 12))" "${output_path}" "${FIXTURE_DIRECTORY}/linux-ready")"
+for attempt in {1..100}; do
+  [[ -f "${FIXTURE_DIRECTORY}/linux-ready" ]] && break
+  sleep 0.02
 done
-grep -q -- '-NonInteractive' "${FIXTURE_DIRECTORY}/powershell-arguments" || fail 'Windows provider not used'
+[[ -f "${FIXTURE_DIRECTORY}/linux-ready" ]] || fail 'paste receiver did not start'
+make_snapshot
+"${PROJECT_DIRECTORY}/scripts/clipboard.sh" pick "${pane_id}"
+grep -qx -- '--preview-window=right,55%,border-left,wrap' "${FIXTURE_DIRECTORY}/fzf-arguments" || fail 'preview is not on the right'
+grep -qx -- '--disabled' "${FIXTURE_DIRECTORY}/fzf-arguments" || fail 'picker starts in search mode'
+grep -qx -- '--bind=j:down,k:up,o:accept,q:abort,change:clear-query' "${FIXTURE_DIRECTORY}/fzf-arguments" || fail 'selection keys differ'
+grep -q -- 'fg:-1,bg:#102030,fg+:-1,bg+:#304050' "${FIXTURE_DIRECTORY}/fzf-arguments" || fail 'picker ignores palette roles'
+grep -q -- 'hl:#90a0b0' "${FIXTURE_DIRECTORY}/fzf-arguments" || fail 'matching does not use focus colour'
+for attempt in {1..100}; do
+  cmp -s "${output_path}" "${FIXTURE_DIRECTORY}/expected" && break
+  sleep 0.02
+done
+if ! cmp -s "${output_path}" "${FIXTURE_DIRECTORY}/expected"; then
+  od -An -tx1 "${output_path}" "${FIXTURE_DIRECTORY}/expected" >&2
+  fail "linux: paste bytes differ"
+fi
+[[ -z "$(tmux list-buffers)" ]] || fail 'temporary paste buffer leaked'
+pass "linux: snapshot pastes Unicode and trailing newlines with bracketed paste into original pane"
+tmux kill-pane -t "${pane_id}"
 for picker_action in cancel error; do
   make_snapshot
   picker_status=0
-  BECK_HISTORY_ACTION="${picker_action}" "${PROJECT_DIRECTORY}/scripts/clipboard-history.sh" pick %0 || picker_status=$?
+  BECK_HISTORY_ACTION="${picker_action}" "${PROJECT_DIRECTORY}/scripts/clipboard.sh" pick %0 || picker_status=$?
   if [[ "${picker_action}" == cancel ]]; then
     [[ "${picker_status}" == 0 ]] || fail 'cancellation was reported as an error'
   else
@@ -141,7 +125,7 @@ touch "${FIXTURE_DIRECTORY}/project/plugins/tmux-fzf/scripts/clipboard.sh"
 chmod +x "${FIXTURE_DIRECTORY}/project/plugins/tmux-fzf/scripts/clipboard.sh"
 make_snapshot
 BECK_TMUX_DIRECTORY="${FIXTURE_DIRECTORY}/project" \
-  "${PROJECT_DIRECTORY}/scripts/clipboard-history.sh" launch /dev/pts/fixture %0
+  "${PROJECT_DIRECTORY}/scripts/clipboard.sh" launch /dev/pts/fixture %0
 grep -qx display-popup "${FIXTURE_DIRECTORY}/popup-arguments" || fail 'popup not opened'
 grep -qx /dev/pts/fixture "${FIXTURE_DIRECTORY}/popup-arguments" || fail 'client target missing'
 grep -q 'pick %0' "${FIXTURE_DIRECTORY}/popup-arguments" || fail 'pane target missing'
@@ -153,12 +137,12 @@ for history_index in {1..100}; do
   printf 'b3RoZXI=\titem %s\n' "${history_index}"
 done >"${FIXTURE_DIRECTORY}/snapshot"
 BECK_TMUX_DIRECTORY="${FIXTURE_DIRECTORY}/project" \
-  "${PROJECT_DIRECTORY}/scripts/clipboard-history.sh" launch /dev/pts/fixture %0
+  "${PROJECT_DIRECTORY}/scripts/clipboard.sh" launch /dev/pts/fixture %0
 [[ "$(awk '/^-h$/ {getline; print}' "${FIXTURE_DIRECTORY}/popup-arguments")" == 17 ]] || fail 'long history popup not capped'
 pass 'popup height follows short history and caps long history at 12 rows'
-SSH_CONNECTION=fixture "${PROJECT_DIRECTORY}/scripts/clipboard-history.sh" launch /dev/pts/fixture %0
+WSL_DISTRO_NAME=fixture SSH_CONNECTION=fixture "${PROJECT_DIRECTORY}/scripts/clipboard.sh" launch /dev/pts/fixture %0
 grep -qx display-message "${FIXTURE_DIRECTORY}/popup-arguments" || fail 'SSH opened desktop history'
-pass 'SSH clients cannot accidentally access server desktop history'
+pass 'SSH into WSL cannot access server desktop history'
 
 wait_for_picker() {
   local picker_pane="$1" expected_prompt="$2" attempt
@@ -197,7 +181,7 @@ if [[ -x "${real_fzf}" ]]; then
       BECK_HISTORY_REAL_FZF="$1" "$2" pick "$3"
       printf done >"$4"
       exec sleep 120
-    ' test "${real_fzf}" "${PROJECT_DIRECTORY}/scripts/clipboard-history.sh" \
+    ' test "${real_fzf}" "${PROJECT_DIRECTORY}/scripts/clipboard.sh" \
       "${receiver_pane}" "${FIXTURE_DIRECTORY}/keys-${key_sequence}-done")"
     wait_for_picker "${picker_pane}" 'Clipboard >'
     rendered_picker="$(tmux capture-pane -e -p -t "${picker_pane}")"

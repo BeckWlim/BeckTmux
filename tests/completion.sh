@@ -18,28 +18,29 @@ pass() { printf '[completion-test] ok: %s\n' "$*"; }
 
 # Avoid downloads and keep HOME unchanged: override only installer destinations.
 (
-  source "${COMPLETION_TEST_PROJECT}/scripts/setup-completion.sh"
+  source "${COMPLETION_TEST_PROJECT}/scripts/setup.sh"
   COMPLETION_CONFIG_DIR="${COMPLETION_TEST_DIR}/config/tmux/shell"
   COMPLETION_DATA_DIR="${COMPLETION_TEST_DIR}/data"
+  COMPLETION_NO_INSTALL=1
   COMPLETION_BASHRC="${COMPLETION_TEST_DIR}/bashrc"
   printf '# existing shell customizations\nalias keep_me=true\n' >"${COMPLETION_BASHRC}"
   cp "${COMPLETION_BASHRC}" "${COMPLETION_TEST_DIR}/original-bashrc"
   if ! find_ble; then
-    if main --no-install; then
-      fail 'missing ble.sh accepted by --no-install'
+    if setup_completion; then
+      fail 'missing ble.sh accepted by --completion-no-install'
     fi
     cmp -s "${COMPLETION_BASHRC}" "${COMPLETION_TEST_DIR}/original-bashrc" || \
       fail 'missing ble.sh modified Bash configuration'
-    pass '--no-install fails without changing the shell when ble.sh is missing'
+    pass '--completion-no-install fails without changing the shell when ble.sh is missing'
   else
     printf '[completion-test] SKIP: missing-install fixture needs no system ble.sh\n'
   fi
 
   mkdir -p "${COMPLETION_DATA_DIR}/blesh"
   printf '# fixture installed ble.sh\n' >"${COMPLETION_DATA_DIR}/blesh/ble.sh"
-  main --no-install
+  setup_completion
   cp "${COMPLETION_BASHRC}" "${COMPLETION_TEST_DIR}/first-bashrc"
-  main --no-install
+  setup_completion
   cmp -s "${COMPLETION_BASHRC}" "${COMPLETION_TEST_DIR}/first-bashrc" || fail 'loader duplicated'
   bash -n "${COMPLETION_BASHRC}"
   grep -q '^alias keep_me=true$' "${COMPLETION_BASHRC}" || fail 'existing configuration removed'
