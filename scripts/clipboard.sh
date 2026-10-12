@@ -11,6 +11,7 @@ entry_count=0
 picker_colors=""
 popup_style=""
 popup_border_style=""
+picker_cursor_hidden=0
 
 usage() {
   cat <<'EOF'
@@ -46,11 +47,39 @@ ssh_client() {
 }
 
 cleanup() {
+  if ((picker_cursor_hidden)) && [[ -t 2 ]]; then
+    printf '\033[?25h' >&2
+  fi
   if [[ -n "${paste_buffer}" ]]; then
     tmux delete-buffer -b "${paste_buffer}" 2>/dev/null || true
   fi
   if [[ -n "${temporary_directory}" ]]; then
     rm -rf -- "${temporary_directory}"
+  fi
+}
+
+hide_picker_cursor() {
+  local terminal_output=""
+  # Older fzf releases show the cursor at the end of every redraw. Rewrite
+  # only that terminal command, streaming at its final byte rather than waiting
+  # for newlines (fullscreen redraws need not contain any).
+  while IFS= read -r -d h terminal_output; do
+    if [[ "${terminal_output}" == *$'\033[?25' ]]; then
+      printf '%sl' "${terminal_output}"
+    else
+      printf '%sh' "${terminal_output}"
+    fi
+  done
+  printf '%s' "${terminal_output}"
+}
+
+run_picker() {
+  if ((picker_cursor_hidden)); then
+    # fzf reads keys and terminal dimensions from /dev/tty. Filter its UI on
+    # stderr while keeping the selected entry on stdout and its exit status.
+    { fzf "$@" 2>&1 1>&3 | hide_picker_cursor >&2; } 3>&1
+  else
+    fzf "$@"
   fi
 }
 
@@ -195,13 +224,15 @@ pick() {
   # Separate picker modes use actions supported by fzf 0.29 in Pop!_OS 22.04.
   while :; do
     if [[ "${picker_mode}" == select ]]; then
+      picker_cursor_hidden=1
       mode_options=(--disabled --bind='j:down,k:up,o:accept,q:abort,change:clear-query' --expect=/ \
         --prompt='Clipboard > ' --header='j/k: select  o/Enter: paste  /: search  q: quit')
     else
+      picker_cursor_hidden=0
       mode_options=(--bind='ctrl-q:abort' --expect=ctrl-g \
         --prompt='Search > ' --header='Type to search  Ctrl-G: select  Enter: paste  Ctrl-Q: quit')
     fi
-    selected_entry="$(FZF_DEFAULT_OPTS= FZF_DEFAULT_OPTS_FILE= fzf \
+    selected_entry="$(FZF_DEFAULT_OPTS= FZF_DEFAULT_OPTS_FILE= run_picker \
       --no-multi --no-sort --delimiter=$'\t' --with-nth=2.. --layout=reverse \
       --border=none --color="${picker_colors}" "${mode_options[@]}" \
       --preview='cat -- "$BECK_CLIPBOARD_SNAPSHOT"/{1}' --preview-window='right,55%,border-left,wrap' \

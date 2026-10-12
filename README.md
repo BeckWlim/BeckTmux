@@ -217,9 +217,10 @@ terminal's Paste action, or use `C-s ]` for the latest tmux buffer.
 ### System clipboard history
 
 Press **`C-s f`**, select an item with `j`/`k` or Up/Down, and press `o` or Enter
-to paste into the pane that opened the picker. It opens in selection mode;
-`/` enters search and Ctrl-G returns to selection. In search mode, type any text
-(including `q` and `o`), press Enter to paste, or Ctrl-Q to quit. In selection mode,
+to paste into the pane that opened the picker. It opens in selection mode.
+The input cursor stays hidden until `/` enters search; Ctrl-G returns to selection
+and hides it again. In search mode, type any text (including `q` and `o`), press
+Enter to paste, or Ctrl-Q to quit. In selection mode,
 `q` quits; Escape closes either mode without pasting. The list is on the left and the wrapped
 preview on the right (55% of the popup width). Popup height follows the history
 length, with up to 12 visible entries and scrolling for longer histories. This uses the
@@ -330,14 +331,16 @@ Open a new Bash shell to load these settings, or source
 ### Enhanced Bash Tab completion
 
 The optional completion setup uses [ble.sh](https://github.com/akinomyoga/ble.sh)
-for inline suggestions from command history and Bash's programmable completions.
+for inline suggestions from command history. Bash's programmable completions
+run when requested with Tab, so idle typing does not launch completers or scan
+Windows-mounted PATH entries on WSL.
 **Tab accepts the next word of a visible suggestion.** Without a suggestion,
 Tab performs normal completion and opens the completion menu when appropriate.
 For multiple matches, Tab shows the menu, subsequent Tab presses select and cycle
 through its items, and Shift-Tab cycles backward. Enter confirms the selected
 completion without executing the command; press Enter again to run it. Arrow
-keys also navigate the menu, and typing filters it. Ambiguous syntax candidates
-are left for the menu instead of suggesting an arbitrary first match inline.
+keys also navigate the menu, and typing filters it. Syntax candidates appear
+in the completion menu rather than as automatic inline suggestions.
 The menu follows Neovim's completion styling: at most ten visible rows, normal
 text on the editor background, a bold selection on the CursorLine background,
 green matching text, and muted descriptions and inline suggestions. Inside tmux,
@@ -385,6 +388,27 @@ To disable the optional integration, remove the marked `beck tmux Bash completio
 block from `.bashrc` and start a new shell.
 
 ### Existing shell customizations
+
+On WSL, the optional `shell/wsl.bash` loader removes Windows drive directories
+(`/mnt/c/...`, `/mnt/d/...`, etc.) from the interactive shell's PATH. This avoids
+slow Windows filesystem scans during Linux command lookup and completion. Source
+it near the beginning of `.bashrc`, after the interactive-shell guard and before
+pyenv, nvm, or the prompt:
+
+```bash
+source ~/.config/tmux/shell/wsl.bash
+```
+
+Linux tools remain on PATH. Use `win powershell.exe` or `win cmd.exe /c ver` for
+Windows commands; `win` restores the saved Windows directories only for that
+invocation. Explicit executable paths also work. The loader preserves saved
+Windows paths in nested shells and does nothing outside interactive WSL Bash.
+It assumes WSL's standard `/mnt/<drive>` mount layout. Remove the source line
+and start a fresh SSH login to restore the inherited Windows PATH.
+
+For pyenv startup, `eval "$(pyenv init - --no-rehash bash)"` avoids rebuilding
+shims on every new shell. Run `pyenv rehash` if newly installed Python commands
+need shims. These host-specific startup choices are not enabled by setup.
 
 This host uses Starship for its Bash prompt, with soft grey context text,
 plain `|` separators, directory/Git icons, and subtle text-colour differences:

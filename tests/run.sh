@@ -78,6 +78,7 @@ check_shell_scripts() {
   "${PROJECT_DIRECTORY}/scripts/clipboard.sh" --help >/dev/null
   bash -n "${PROJECT_DIRECTORY}/shell/completion.bash"
   bash -n "${PROJECT_DIRECTORY}/shell/prompt.bash"
+  bash -n "${PROJECT_DIRECTORY}/shell/wsl.bash"
   "${MIGRATION_SCRIPT_PATH}" --help >/dev/null
   "${THEME_SCRIPT_PATH}" --help >/dev/null
   pass 'shell entry points parse and expose help without side effects'
@@ -560,6 +561,7 @@ main() {
     pass 'Bash completion setup and available real-key tests pass'
   fi
   if [[ "${group}" == all || "${group}" == prompt ]]; then
+    "${TESTS_DIRECTORY}/wsl.sh"
     "${TESTS_DIRECTORY}/prompt.sh"
     pass 'Bash prompt setup and available rendering tests pass'
   fi

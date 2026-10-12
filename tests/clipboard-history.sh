@@ -153,8 +153,17 @@ wait_for_picker() {
   fail "picker did not show ${expected_prompt}"
 }
 
+assert_picker_cursor() {
+  local picker_pane="$1" expected_visibility="$2" attempt
+  for attempt in {1..100}; do
+    [[ "$(tmux display-message -p -t "${picker_pane}" '#{cursor_flag}')" == "${expected_visibility}" ]] && return
+    sleep 0.02
+  done
+  fail "picker cursor visibility differs: expected ${expected_visibility}"
+}
+
 if [[ -x "${real_fzf}" ]]; then
-  for key_sequence in down up paste ignore search search-q return quit search-quit; do
+  for key_sequence in down up paste ignore search search-q return quit escape search-quit search-escape; do
     make_snapshot
     expected_path="${FIXTURE_DIRECTORY}/keys-${key_sequence}-expected"
     printf '\033[200~' >"${expected_path}"
@@ -184,40 +193,53 @@ if [[ -x "${real_fzf}" ]]; then
     ' test "${real_fzf}" "${PROJECT_DIRECTORY}/scripts/clipboard.sh" \
       "${receiver_pane}" "${FIXTURE_DIRECTORY}/keys-${key_sequence}-done")"
     wait_for_picker "${picker_pane}" 'Clipboard >'
+    assert_picker_cursor "${picker_pane}" 0
     rendered_picker="$(tmux capture-pane -e -p -t "${picker_pane}")"
     [[ "${rendered_picker}" == *'48;2;16;32;48'* ]] || fail 'real picker background does not follow palette'
     case "${key_sequence}" in
-      down) tmux send-keys -t "${picker_pane}" j Enter ;;
+      down)
+        tmux send-keys -t "${picker_pane}" j
+        wait_for_picker "${picker_pane}" '> other item'
+        assert_picker_cursor "${picker_pane}" 0
+        tmux send-keys -t "${picker_pane}" Enter ;;
       up) tmux send-keys -t "${picker_pane}" j k Enter ;;
       paste) tmux send-keys -t "${picker_pane}" j o ;;
       ignore)
         tmux send-keys -t "${picker_pane}" text
         wait_for_picker "${picker_pane}" '2/2'
+        assert_picker_cursor "${picker_pane}" 0
         tmux send-keys -t "${picker_pane}" Enter ;;
-      search|search-q|search-quit|return)
+      search|search-q|search-quit|search-escape|return)
         tmux send-keys -t "${picker_pane}" /
         wait_for_picker "${picker_pane}" 'Search >'
+        assert_picker_cursor "${picker_pane}" 1
         if [[ "${key_sequence}" == search || "${key_sequence}" == search-q ]]; then
           search_text=other
           [[ "${key_sequence}" != search-q ]] || search_text=quiet
           tmux send-keys -t "${picker_pane}" "${search_text}"
           wait_for_picker "${picker_pane}" '1/2'
+          assert_picker_cursor "${picker_pane}" 1
           tmux send-keys -t "${picker_pane}" Enter
         elif [[ "${key_sequence}" == search-quit ]]; then
           tmux send-keys -t "${picker_pane}" C-q
+        elif [[ "${key_sequence}" == search-escape ]]; then
+          tmux send-keys -t "${picker_pane}" Escape
         else
           tmux send-keys -t "${picker_pane}" C-g
           wait_for_picker "${picker_pane}" 'Clipboard >'
+          assert_picker_cursor "${picker_pane}" 0
           tmux send-keys -t "${picker_pane}" j Enter
         fi ;;
       quit) tmux send-keys -t "${picker_pane}" q ;;
+      escape) tmux send-keys -t "${picker_pane}" Escape ;;
     esac
     for attempt in {1..100}; do
       [[ -f "${FIXTURE_DIRECTORY}/keys-${key_sequence}-done" ]] && break
       sleep 0.02
     done
     [[ -f "${FIXTURE_DIRECTORY}/keys-${key_sequence}-done" ]] || fail "${key_sequence}: picker did not finish"
-    if [[ "${key_sequence}" == quit || "${key_sequence}" == search-quit ]]; then
+    assert_picker_cursor "${picker_pane}" 1
+    if [[ "${key_sequence}" == *quit || "${key_sequence}" == *escape ]]; then
       [[ ! -s "${FIXTURE_DIRECTORY}/keys-${key_sequence}-paste" ]] || fail "${key_sequence}: quit pasted text"
     else
       cmp -s "${expected_path}" "${FIXTURE_DIRECTORY}/keys-${key_sequence}-paste" || fail "${key_sequence}: selected wrong entry"

@@ -13,7 +13,13 @@ cleanup_completion_tests() {
   rm -rf -- "${COMPLETION_TEST_DIR}"
 }
 trap cleanup_completion_tests EXIT
-fail() { printf '[completion-test] FAIL: %s\n' "$*" >&2; exit 1; }
+fail() {
+  printf '[completion-test] FAIL: %s\n' "$*" >&2
+  if ((completion_test_server_started)); then
+    tmux -S "${COMPLETION_TEST_SOCKET}" capture-pane -p >&2 || true
+  fi
+  exit 1
+}
 pass() { printf '[completion-test] ok: %s\n' "$*"; }
 
 # Avoid downloads and keep HOME unchanged: override only installer destinations.
@@ -66,6 +72,7 @@ command -v tmux >/dev/null || fail 'tmux is required for real-key tests'
 mkdir -p "${COMPLETION_TEST_DIR}/interactive-data" "${COMPLETION_TEST_DIR}/cache"
 ln -s "${test_ble_root}" "${COMPLETION_TEST_DIR}/interactive-data/blesh"
 cat >"${COMPLETION_TEST_DIR}/interactive.bashrc" <<'EOF'
+source "${BECK_COMPLETION_TEST_PROJECT}/shell/wsl.bash"
 PS1=$'completion-test\n$ '
 HISTFILE="${BECK_COMPLETION_TEST_DIR}/history"
 PROMPT_COMMAND=':'
@@ -94,6 +101,11 @@ ble-bind -m auto_complete -f 'C-x C-t' beck-test/snapshot
 ble-bind -m menu_complete -f 'C-x C-t' beck-test/snapshot
 function beck-choice { printf 'executed\n' >"${BECK_COMPLETION_TEST_DIR}/executed"; }
 complete -W 'alpha beta gamma' beck-choice
+function beck-test/explicit-completion {
+  printf 'called\n' >"${BECK_COMPLETION_TEST_DIR}/completer-called"
+  COMPREPLY=(explicit-candidate)
+}
+complete -F beck-test/explicit-completion beck-explicit
 history -c
 history -s 'printf history-word-one history-word-two'
 printf 'ready\n' >"${BECK_COMPLETION_TEST_DIR}/ready"
@@ -118,8 +130,10 @@ env -u TMUX \
 completion_test_server_started=1
 
 wait_for_file() {
-  local awaited_file="$1" attempt
-  for ((attempt=0; attempt<100; attempt++)); do
+  local awaited_file="$1" attempt maximum_attempts=100
+  # A cold, isolated cache must compile ble.sh's Vim keymaps before readiness.
+  [[ ${awaited_file} != "${COMPLETION_TEST_DIR}/ready" ]] || maximum_attempts=600
+  for ((attempt=0; attempt<maximum_attempts; attempt++)); do
     [[ ! -s ${awaited_file} ]] || return 0
     sleep 0.05
   done
@@ -128,15 +142,18 @@ wait_for_file() {
 }
 send_key() { tmux -S "${COMPLETION_TEST_SOCKET}" send-keys "$@"; }
 wait_for_mode_tag() {
-  local expected_mode="$1" attempt pane_text row
+  local expected_mode="$1" attempt pane_text row mode_row
   for ((attempt=0; attempt<100; attempt++)); do
     pane_text=$(tmux -S "${COMPLETION_TEST_SOCKET}" capture-pane -p)
+    mode_row=
     while IFS= read -r row; do
-      # The tag follows context text, without padding to the pane's right edge.
-      if [[ ${row} == *"[${expected_mode}]"* ]]; then
-        return 0
+      if [[ ${row} =~ \[(INSERT|NORMAL|VISUAL|SELECT|REPLACE|COMMAND)\] ]]; then
+        mode_row=${row}
       fi
     done <<<"${pane_text}"
+    # Earlier commands retain their tags in scrollback. Only the most recent
+    # prompt describes the current editor mode.
+    [[ ${mode_row} != *"[${expected_mode}]"* ]] || return 0
     sleep 0.05
   done
   printf '%s\n' "${pane_text}" >&2
@@ -148,6 +165,35 @@ snapshot() {
   wait_for_file "${COMPLETION_TEST_DIR}/snapshot"
   snapshot_text=$(cat "${COMPLETION_TEST_DIR}/snapshot")
 }
+wait_for_text() {
+  local expected_text="$1" match_mode="${2:-contains}" attempt pane_text row last_row
+  for ((attempt=0; attempt<100; attempt++)); do
+    pane_text=$(tmux -S "${COMPLETION_TEST_SOCKET}" capture-pane -p)
+    last_row=
+    while IFS= read -r row; do
+      [[ ${row} != *[![:space:]]* ]] || last_row=${row}
+    done <<<"${pane_text}"
+    if [[ ${match_mode} == exact ]]; then
+      [[ ${last_row} != "${expected_text}" ]] || return 0
+    else
+      [[ ${last_row} != *"${expected_text}"* ]] || return 0
+    fi
+    sleep 0.05
+  done
+  fail "text did not appear: ${expected_text}"
+}
+wait_for_suggestion() {
+  # Injected snapshot keys suppress idle suggestions. Observe the current
+  # input row first, ignoring matching text left in previous prompt rows.
+  wait_for_text 'history-word-one history-word-two'
+  snapshot
+}
+reset_input() {
+  send_key C-c
+  # Ctrl+C flushes pending input while discarding the line. Wait until the
+  # shell has drawn its empty prompt before queuing the next test command.
+  wait_for_text '$' exact
+}
 wait_for_file "${COMPLETION_TEST_DIR}/ready"
 wait_for_mode_tag INSERT
 grep -q 'auto_complete=fg=#9a9b9c' "${COMPLETION_TEST_DIR}/theme-faces" || fail 'suggestions ignored tmux muted colour'
@@ -155,9 +201,19 @@ grep -qx 'ble-face beck_vim_mode=fg=#9a9b9c' "${COMPLETION_TEST_DIR}/theme-faces
 grep -q 'menu_complete_selected=.*bg=#123456' "${COMPLETION_TEST_DIR}/theme-faces" || fail 'selection ignored tmux selection colour'
 grep -q 'menu_complete_match=.*fg=#abcdef' "${COMPLETION_TEST_DIR}/theme-faces" || fail 'matches ignored tmux focus colour'
 pass 'completion colours follow the configured tmux palette roles'
+send_key -l 'beck-explicit '
+sleep 0.5
+[[ ! -e ${COMPLETION_TEST_DIR}/completer-called ]] || fail 'idle typing ran a programmable completer'
+send_key Tab
+wait_for_file "${COMPLETION_TEST_DIR}/completer-called"
+wait_for_text 'explicit-candidate'
+snapshot
+[[ ${snapshot_text} == 'beck-explicit explicit-candidate '* ]] || fail 'Tab did not request programmable completion'
+pass 'programmable completers run on Tab, not during idle typing'
+reset_input
 sleep 0.5
 send_key -l 'printf his'
-sleep 0.5
+wait_for_suggestion
 send_key Tab
 snapshot
 [[ ${snapshot_text} == 'printf history-word-one ' ]] || fail "Tab accepted the wrong history text: ${snapshot_text}"
@@ -166,10 +222,9 @@ snapshot
 [[ ${snapshot_text} == 'printf history-word-one history-word-two' ]] || fail 'second Tab did not accept the next word'
 pass 'real Tab accepts history suggestions one word at a time'
 
-send_key C-c
+reset_input
 send_key -l 'printf his'
-sleep 0.5
-snapshot
+wait_for_suggestion
 [[ $(cat "${COMPLETION_TEST_DIR}/input-keymap") == auto_complete ]] || fail 'history hint did not appear'
 send_key C-o
 snapshot
@@ -178,10 +233,9 @@ snapshot
   fail 'Ctrl+O did not dismiss the hint and enter Normal mode without changing input'
 pass 'Ctrl+O dismisses an inline hint and enters Normal mode without changing input'
 for newline_key in C-n M-Enter; do
-  send_key C-c
+  reset_input
   send_key -l 'printf his'
-  sleep 0.5
-  snapshot
+  wait_for_suggestion
   [[ $(cat "${COMPLETION_TEST_DIR}/input-keymap") == auto_complete ]] || fail "history hint did not appear before ${newline_key}"
   send_key "${newline_key}"
   snapshot
@@ -192,15 +246,16 @@ for newline_key in C-n M-Enter; do
   pass "${newline_key} dismisses an inline hint and inserts a newline without submitting"
 done
 
-send_key C-c
+reset_input
 send_key -l 'git log --on'
 sleep 0.5
 send_key Tab
+wait_for_text 'git log --oneline'
 snapshot
 [[ ${snapshot_text} == 'git log --oneline '* ]] || fail "Git option completion failed: ${snapshot_text}"
 pass 'Git subcommand options complete through the installed Bash completer'
 
-send_key C-c
+reset_input
 send_key -l 'beck-choice '
 sleep 0.3
 send_key Tab
@@ -222,7 +277,7 @@ snapshot
 [[ ${snapshot_text} == 'beck-choice alpha '* ]] || fail 'Enter did not accept the menu selection'
 pass 'Tab and Shift-Tab cycle choices; Enter accepts without running the command'
 
-send_key C-c
+reset_input
 printf -v original_command 'printf "%%s" "%0120d old value"' 0
 send_key -l "${original_command}"
 snapshot
@@ -286,7 +341,7 @@ wait_for_mode_tag INSERT
   fail 'A did not return to shell Insert mode at the end of the command'
 pass 'tmux scrollback preserves shell Normal mode, input text, undo, and return to Insert'
 send_key Escape
-send_key C-c
+reset_input
 snapshot
 [[ ! $(cat "${COMPLETION_TEST_DIR}/input-text") &&
    $(cat "${COMPLETION_TEST_DIR}/input-keymap") == vi_imap ]] || \
@@ -346,7 +401,7 @@ snapshot
    $(cat "${COMPLETION_TEST_DIR}/input-keymap") == vi_nmap ]] || \
   fail 'cancelling a search changed the cursor or shell mode'
 pass 'Normal-mode / and ? search the current command with wrapping, n/N repeats, and cancellation'
-send_key C-c
+reset_input
 
 # Ctrl+N splits the command at the Insert-mode cursor, including inside a line.
 send_key -l 'printf split-point'
@@ -358,7 +413,7 @@ snapshot
 [[ $(cat "${COMPLETION_TEST_DIR}/input-text") == $'printf \nsplit-point' &&
    $(cat "${COMPLETION_TEST_DIR}/input-keymap") == vi_imap ]] || \
   fail 'Ctrl+N did not split the command at the cursor and stay in Insert mode'
-send_key C-c
+reset_input
 pass 'Insert-mode Ctrl+N inserts a newline at the cursor without submitting'
 
 for submit_mode in normal insert insert-reloaded; do
@@ -366,6 +421,7 @@ for submit_mode in normal insert insert-reloaded; do
     send_key -l 'source "$BECK_COMPLETION_TEST_PROJECT/shell/completion.bash"; printf ready > "$BECK_COMPLETION_TEST_DIR/reloaded"'
     send_key Enter
     wait_for_file "${COMPLETION_TEST_DIR}/reloaded"
+    wait_for_text '$' exact
     wait_for_mode_tag INSERT
   fi
   send_key -l 'printf one > "$BECK_COMPLETION_TEST_DIR/submit-'
@@ -392,6 +448,7 @@ for submit_mode in normal insert insert-reloaded; do
   wait_for_file "${COMPLETION_TEST_DIR}/submit-${submit_mode}"
   [[ $(cat "${COMPLETION_TEST_DIR}/submit-${submit_mode}") == onetwo ]] || \
     fail "Enter did not submit the multiline command from ${submit_mode} mode"
+  wait_for_text '$' exact
   wait_for_mode_tag INSERT
 done
 pass 'Enter submits multiline commands after cursor movement and reloading; Ctrl+N and Alt+Enter insert newlines'

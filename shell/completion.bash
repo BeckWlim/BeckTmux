@@ -208,8 +208,10 @@ function beck/completion-theme {
 function beck/complete-load {
   bleopt complete_auto_complete=1 complete_auto_history=1 complete_auto_delay=150
   bleopt complete_menu_complete=1 complete_menu_style=desc complete_menu_maxlines=10
-  # Ambiguous syntax should produce a menu, not an arbitrary inline choice.
-  bleopt complete_auto_complete_opts+=syntax-unique
+  # Keep idle suggestions in memory. Programmable completion may scan Windows
+  # PATH entries over WSL or run external completers; request it explicitly
+  # with Tab instead of starting that work between ordinary keystrokes.
+  bleopt complete_auto_complete_opts+=syntax-disabled
   # Keep ordinary Tab completion and menu cycling outside the suggestion map.
   # Support both encodings because terminals normally send C-i for Tab.
   ble-bind -m auto_complete -f C-i 'auto_complete/@end insert-word'
