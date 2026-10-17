@@ -94,7 +94,7 @@ cat >"${BECK_TMUX_TEST_CLIPBOARD_PATH}.pending"
 mv "${BECK_TMUX_TEST_CLIPBOARD_PATH}.pending" "${BECK_TMUX_TEST_CLIPBOARD_PATH}"
 WAYLAND_STUB
   chmod +x "${temporary_directory}/wl-copy"
-  env -u TMUX -u SSH_CONNECTION -u SSH_TTY BECK_TMUX_TEST_CLIPBOARD_PATH="${temporary_directory}/clipboard.bin" \
+  env -u TMUX -u SSH_CONNECTION -u SSH_TTY -u WSL_DISTRO_NAME BECK_TMUX_TEST_CLIPBOARD_PATH="${temporary_directory}/clipboard.bin" \
     WAYLAND_DISPLAY=beck-test PATH="${temporary_directory}:${PATH}" \
     tmux -S "${tmux_socket_path}" -f "${TMUX_CONFIG_PATH}" \
     new-session -d -s config-test
@@ -229,10 +229,10 @@ check_clipboard() {
 
 check_clipboard_client_routing() {
   local clipboard_script="${PROJECT_DIRECTORY}/scripts/clipboard.sh"
-  local local_status=0 remote_status=0 fallback_status=0
+  local local_status=0 remote_status=0 fallback_status=0 wsl_status=0
   env -u SSH_CONNECTION -u SSH_TTY sleep 5 &
   local local_client_pid=$!
-  env SSH_CONNECTION='shared-session 10000 test-host 22' WAYLAND_DISPLAY=beck-test \
+  env -u WSL_DISTRO_NAME SSH_CONNECTION='shared-session 10000 test-host 22' WAYLAND_DISPLAY=beck-test \
     PATH="${temporary_directory}:${PATH}" \
     bash "${clipboard_script}" use-native "${local_client_pid}" || local_status=$?
   kill "${local_client_pid}" 2>/dev/null || true
@@ -242,9 +242,23 @@ check_clipboard_client_routing() {
     PATH="${temporary_directory}:${PATH}" \
     bash -c 'exec bash "$1" use-native "$$"' test "${clipboard_script}" || remote_status=$?
   assert_equal 'SSH into WSL bypasses inherited Wayland clipboard' 1 "${remote_status}"
-  env -u SSH_CONNECTION -u SSH_TTY -u WAYLAND_DISPLAY \
+  env -u SSH_CONNECTION -u SSH_TTY WSL_DISTRO_NAME=fixture WAYLAND_DISPLAY=beck-test \
+    PATH="${temporary_directory}:${PATH}" \
+    bash -c 'exec bash "$1" use-native "$$"' test "${clipboard_script}" || wsl_status=$?
+  assert_equal 'local WSL uses terminal clipboard despite available WSLg Wayland' 1 "${wsl_status}"
+  env -u SSH_CONNECTION -u SSH_TTY -u WAYLAND_DISPLAY -u WSL_DISTRO_NAME \
     bash "${clipboard_script}" use-native || fallback_status=$?
   assert_equal 'client without Wayland falls back to tmux OSC 52' 1 "${fallback_status}"
+}
+
+check_clipboard_wsl() {
+  tmux -S "${tmux_socket_path}" set-environment -g WSL_DISTRO_NAME fixture
+  # WAYLAND_DISPLAY and the working wl-copy stub are still available here.
+  rm -f -- "${temporary_directory}/clipboard.bin"
+  check_clipboard 'WSL OSC 52'
+  [[ ! -e "${temporary_directory}/clipboard.bin" ]] || fail 'WSL copied only to Wayland'
+  pass 'local WSL copy keys bypass Wayland and retain tmux clipboard delivery'
+  tmux -S "${tmux_socket_path}" set-environment -gu WSL_DISTRO_NAME
 }
 
 check_clipboard_fallback() {
@@ -575,6 +589,7 @@ main() {
     if [[ "${group}" == all || "${group}" == clipboard ]]; then
       check_clipboard_client_routing
       check_clipboard Wayland
+      check_clipboard_wsl
       check_clipboard_fallback
       "${TESTS_DIRECTORY}/clipboard-history.sh"
       pass 'local clipboard history snapshots and paste bytes'

@@ -21,7 +21,7 @@ Usage: clipboard.sh use-native [CLIENT_PID]
        clipboard.sh pick PANE_ID [SNAPSHOT_DIRECTORY]
        clipboard.sh start
 
-use-native chooses Wayland for a local client; SSH clients use tmux OSC 52.
+use-native chooses Wayland for a local Linux client; WSL/SSH use tmux OSC 52.
 copy-native reads UTF-8 from stdin and writes to the Wayland clipboard.
 Tmux owns paste buffers and OSC 52 delivery, including SSH into WSL.
 
@@ -34,6 +34,9 @@ EOF
 }
 
 native_provider() {
+  # WSLg's Wayland clipboard can diverge from the Windows terminal clipboard.
+  # Use tmux OSC 52 there so native copying cannot suppress the terminal write.
+  [[ -z "${WSL_DISTRO_NAME:-}" ]] || return 1
   [[ -n "${WAYLAND_DISPLAY:-}" ]] && command -v wl-copy >/dev/null 2>&1
 }
 

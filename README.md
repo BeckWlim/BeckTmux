@@ -203,14 +203,17 @@ release. `y`/`C-c` copy and clear the selection while preserving command mode an
 the cursor position. `Enter` does the same when a selection exists and otherwise
 keeps command mode active. `i`, `q`, or `C-q` returns to input mode.
 
-On tmux 3.6 or newer, local clients use `wl-copy --type text/plain` when
-Wayland is available, preserving Unicode text directly.
+On tmux 3.6 or newer, local Linux clients outside WSL use
+`wl-copy --type text/plain` when Wayland is available, preserving Unicode text directly.
 `scripts/clipboard.sh` chooses the route at keypress time for the calling client.
 It reads that client's SSH environment, so an SSH client uses OSC 52
-even when sharing a session started on the local desktop. Local clients keep
+even when sharing a session started on the local desktop. Local Linux clients outside WSL keep
 the native provider, which runs asynchronously and suppresses OSC 52 for that
 operation. Tmux owns the paste buffer and OSC 52 delivery. With no native
-provider, copying uses OSC 52 as well. This includes SSH from PowerShell into WSL;
+provider, copying uses OSC 52 as well. WSL uses OSC 52 for both local and SSH
+clients, even when WSLg provides `wl-copy`: the Linux clipboard can update while
+Windows Ctrl+V still pastes old text. Copies go through the terminal so its
+clipboard receives the selection. This includes SSH from PowerShell into WSL;
 the client terminal must support OSC 52 clipboard writes. Paste local clipboard text with your
 terminal's Paste action, or use `C-s ]` for the latest tmux buffer.
 
